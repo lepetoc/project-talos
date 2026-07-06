@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,14 +21,55 @@ impl fmt::Display for NotDisarmedError {
 
 impl std::error::Error for NotDisarmedError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneKind {
+    Delay,
+    Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneStatus {
+    Clear,
+    Triggered,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneAlreadyExistsError(pub u32);
+
+impl fmt::Display for ZoneAlreadyExistsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "zone {} is already registered", self.0)
+    }
+}
+
+impl std::error::Error for ZoneAlreadyExistsError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownZoneError(pub u32);
+
+impl fmt::Display for UnknownZoneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "zone {} is not registered", self.0)
+    }
+}
+
+impl std::error::Error for UnknownZoneError {}
+
+struct Zone {
+    kind: ZoneKind,
+    status: ZoneStatus,
+}
+
 pub struct Alarm {
     state: State,
+    zones: HashMap<u32, Zone>,
 }
 
 impl Alarm {
     pub fn new() -> Self {
         Alarm {
             state: State::Disarmed,
+            zones: HashMap::new(),
         }
     }
 
@@ -47,6 +89,55 @@ impl Alarm {
     pub fn disarm(&mut self) {
         self.state = State::Disarmed;
     }
+
+    pub fn add_zone(&mut self, id: u32, kind: ZoneKind) -> Result<(), ZoneAlreadyExistsError> {
+        if self.zones.contains_key(&id) {
+            return Err(ZoneAlreadyExistsError(id));
+        }
+        self.zones.insert(
+            id,
+            Zone {
+                kind,
+                status: ZoneStatus::Clear,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn zone_status(&self, id: u32) -> Option<ZoneStatus> {
+        self.zones.get(&id).map(|zone| zone.status)
+    }
+
+    pub fn all_zones_clear(&self) -> bool {
+        self.zones
+            .values()
+            .all(|zone| zone.status == ZoneStatus::Clear)
+    }
+
+    pub fn report_zone_event(
+        &mut self,
+        id: u32,
+        status: ZoneStatus,
+    ) -> Result<(), UnknownZoneError> {
+        let zone = self.zones.get_mut(&id).ok_or(UnknownZoneError(id))?;
+        zone.status = status;
+        let kind = zone.kind;
+
+        match (self.state, status, kind) {
+            (State::Armed, ZoneStatus::Triggered, ZoneKind::Instant) => {
+                self.state = State::Triggered;
+            }
+            (State::Armed, ZoneStatus::Triggered, ZoneKind::Delay) => {
+                self.state = State::EntryDelay;
+            }
+            (State::EntryDelay, ZoneStatus::Triggered, ZoneKind::Instant) => {
+                self.state = State::Triggered;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for Alarm {
@@ -58,6 +149,18 @@ impl Default for Alarm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn armed_alarm() -> Alarm {
+        let mut alarm = Alarm::new();
+        alarm.state = State::Armed;
+        alarm
+    }
+
+    fn entry_delay_alarm() -> Alarm {
+        let mut alarm = Alarm::new();
+        alarm.state = State::EntryDelay;
+        alarm
+    }
 
     #[test]
     fn initial_state_is_disarmed() {
@@ -98,5 +201,116 @@ mod tests {
 
         alarm.disarm();
         assert_eq!(alarm.state(), State::Disarmed);
+    }
+
+    #[test]
+    fn add_zone_twice_errors_and_leaves_state_unchanged() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Delay).unwrap();
+        let result = alarm.add_zone(1, ZoneKind::Instant);
+        assert_eq!(result, Err(ZoneAlreadyExistsError(1)));
+        assert_eq!(alarm.zone_status(1), Some(ZoneStatus::Clear));
+    }
+
+    #[test]
+    fn report_event_unknown_zone_errors() {
+        let mut alarm = Alarm::new();
+        let result = alarm.report_zone_event(42, ZoneStatus::Triggered);
+        assert_eq!(result, Err(UnknownZoneError(42)));
+    }
+
+    #[test]
+    fn new_zone_starts_clear() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        assert_eq!(alarm.zone_status(1), Some(ZoneStatus::Clear));
+    }
+
+    #[test]
+    fn zone_status_unknown_is_none() {
+        let alarm = Alarm::new();
+        assert_eq!(alarm.zone_status(99), None);
+    }
+
+    #[test]
+    fn armed_instant_triggered_sets_triggered() {
+        let mut alarm = armed_alarm();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::Triggered);
+    }
+
+    #[test]
+    fn armed_delay_triggered_sets_entry_delay() {
+        let mut alarm = armed_alarm();
+        alarm.add_zone(1, ZoneKind::Delay).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::EntryDelay);
+    }
+
+    #[test]
+    fn entry_delay_instant_triggered_sets_triggered() {
+        let mut alarm = entry_delay_alarm();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::Triggered);
+    }
+
+    #[test]
+    fn entry_delay_delay_triggered_stays_entry_delay() {
+        let mut alarm = entry_delay_alarm();
+        alarm.add_zone(1, ZoneKind::Delay).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::EntryDelay);
+    }
+
+    #[test]
+    fn exit_delay_zone_event_does_not_change_state() {
+        let mut alarm = Alarm::new();
+        alarm.arm().unwrap();
+        assert_eq!(alarm.state(), State::ExitDelay);
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::ExitDelay);
+    }
+
+    #[test]
+    fn disarmed_zone_event_does_not_change_state() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::Disarmed);
+    }
+
+    #[test]
+    fn triggered_zone_event_does_not_change_state() {
+        let mut alarm = Alarm::new();
+        alarm.state = State::Triggered;
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::Triggered);
+    }
+
+    #[test]
+    fn all_zones_clear_true_with_no_zones() {
+        let alarm = Alarm::new();
+        assert!(alarm.all_zones_clear());
+    }
+
+    #[test]
+    fn all_zones_clear_true_when_all_clear() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.add_zone(2, ZoneKind::Delay).unwrap();
+        assert!(alarm.all_zones_clear());
+    }
+
+    #[test]
+    fn all_zones_clear_false_when_one_triggered() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.add_zone(2, ZoneKind::Delay).unwrap();
+        alarm.report_zone_event(2, ZoneStatus::Triggered).unwrap();
+        assert!(!alarm.all_zones_clear());
     }
 }

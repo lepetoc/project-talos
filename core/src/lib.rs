@@ -55,6 +55,36 @@ impl fmt::Display for UnknownZoneError {
 
 impl std::error::Error for UnknownZoneError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotInExitDelayError(pub State);
+
+impl fmt::Display for NotInExitDelayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot complete exit delay: current state is {:?}, not ExitDelay",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotInExitDelayError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotInEntryDelayError(pub State);
+
+impl fmt::Display for NotInEntryDelayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot complete entry delay: current state is {:?}, not EntryDelay",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotInEntryDelayError {}
+
 struct Zone {
     kind: ZoneKind,
     status: ZoneStatus,
@@ -136,6 +166,26 @@ impl Alarm {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    pub fn complete_exit_delay(&mut self) -> Result<bool, NotInExitDelayError> {
+        if self.state != State::ExitDelay {
+            return Err(NotInExitDelayError(self.state));
+        }
+        if self.all_zones_clear() {
+            self.state = State::Armed;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn complete_entry_delay(&mut self) -> Result<(), NotInEntryDelayError> {
+        if self.state != State::EntryDelay {
+            return Err(NotInEntryDelayError(self.state));
+        }
+        self.state = State::Triggered;
         Ok(())
     }
 }
@@ -312,5 +362,55 @@ mod tests {
         alarm.add_zone(2, ZoneKind::Delay).unwrap();
         alarm.report_zone_event(2, ZoneStatus::Triggered).unwrap();
         assert!(!alarm.all_zones_clear());
+    }
+
+    #[test]
+    fn complete_exit_delay_from_disarmed_errors() {
+        let mut alarm = Alarm::new();
+        let result = alarm.complete_exit_delay();
+        assert_eq!(result, Err(NotInExitDelayError(State::Disarmed)));
+        assert_eq!(alarm.state(), State::Disarmed);
+    }
+
+    #[test]
+    fn complete_exit_delay_with_no_zones_arms() {
+        let mut alarm = Alarm::new();
+        alarm.arm().unwrap();
+        let result = alarm.complete_exit_delay();
+        assert_eq!(result, Ok(true));
+        assert_eq!(alarm.state(), State::Armed);
+    }
+
+    #[test]
+    fn complete_exit_delay_with_triggered_zone_stays_exit_delay() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.arm().unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+
+        let result = alarm.complete_exit_delay();
+        assert_eq!(result, Ok(false));
+        assert_eq!(alarm.state(), State::ExitDelay);
+
+        alarm.report_zone_event(1, ZoneStatus::Clear).unwrap();
+        let result = alarm.complete_exit_delay();
+        assert_eq!(result, Ok(true));
+        assert_eq!(alarm.state(), State::Armed);
+    }
+
+    #[test]
+    fn complete_entry_delay_from_other_state_errors() {
+        let mut alarm = Alarm::new();
+        let result = alarm.complete_entry_delay();
+        assert_eq!(result, Err(NotInEntryDelayError(State::Disarmed)));
+        assert_eq!(alarm.state(), State::Disarmed);
+    }
+
+    #[test]
+    fn complete_entry_delay_from_entry_delay_triggers() {
+        let mut alarm = entry_delay_alarm();
+        let result = alarm.complete_entry_delay();
+        assert_eq!(result, Ok(()));
+        assert_eq!(alarm.state(), State::Triggered);
     }
 }

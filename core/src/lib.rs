@@ -11,15 +11,22 @@ pub enum State {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotDisarmedError(pub State);
+pub struct WrongStateError {
+    pub actual: State,
+    pub expected: State,
+}
 
-impl fmt::Display for NotDisarmedError {
+impl fmt::Display for WrongStateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "cannot arm: current state is {:?}, not Disarmed", self.0)
+        write!(
+            f,
+            "expected state {:?}, but actual state is {:?}",
+            self.expected, self.actual
+        )
     }
 }
 
-impl std::error::Error for NotDisarmedError {}
+impl std::error::Error for WrongStateError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZoneKind {
@@ -55,36 +62,6 @@ impl fmt::Display for UnknownZoneError {
 
 impl std::error::Error for UnknownZoneError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotInExitDelayError(pub State);
-
-impl fmt::Display for NotInExitDelayError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cannot complete exit delay: current state is {:?}, not ExitDelay",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for NotInExitDelayError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NotInEntryDelayError(pub State);
-
-impl fmt::Display for NotInEntryDelayError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cannot complete entry delay: current state is {:?}, not EntryDelay",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for NotInEntryDelayError {}
-
 struct Zone {
     kind: ZoneKind,
     status: ZoneStatus,
@@ -107,15 +84,23 @@ impl Alarm {
         self.state
     }
 
-    pub fn arm(&mut self) -> Result<(), NotDisarmedError> {
+    pub fn arm(&mut self) -> Result<(), WrongStateError> {
         if self.state == State::Disarmed {
             self.state = State::ExitDelay;
             Ok(())
         } else {
-            Err(NotDisarmedError(self.state))
+            Err(WrongStateError {
+                actual: self.state,
+                expected: State::Disarmed,
+            })
         }
     }
 
+    /// Unconditionally transitions to `Disarmed` from any state.
+    ///
+    /// This deliberately does not reset any zone's status: zone status reflects
+    /// physical reality as reported by `report_zone_event`, independent of the
+    /// alarm's arming state.
     pub fn disarm(&mut self) {
         self.state = State::Disarmed;
     }
@@ -169,9 +154,12 @@ impl Alarm {
         Ok(())
     }
 
-    pub fn complete_exit_delay(&mut self) -> Result<bool, NotInExitDelayError> {
+    pub fn complete_exit_delay(&mut self) -> Result<bool, WrongStateError> {
         if self.state != State::ExitDelay {
-            return Err(NotInExitDelayError(self.state));
+            return Err(WrongStateError {
+                actual: self.state,
+                expected: State::ExitDelay,
+            });
         }
         if self.all_zones_clear() {
             self.state = State::Armed;
@@ -181,9 +169,12 @@ impl Alarm {
         }
     }
 
-    pub fn complete_entry_delay(&mut self) -> Result<(), NotInEntryDelayError> {
+    pub fn complete_entry_delay(&mut self) -> Result<(), WrongStateError> {
         if self.state != State::EntryDelay {
-            return Err(NotInEntryDelayError(self.state));
+            return Err(WrongStateError {
+                actual: self.state,
+                expected: State::EntryDelay,
+            });
         }
         self.state = State::Triggered;
         Ok(())
@@ -232,7 +223,13 @@ mod tests {
         assert_eq!(alarm.state(), State::ExitDelay);
 
         let result = alarm.arm();
-        assert_eq!(result, Err(NotDisarmedError(State::ExitDelay)));
+        assert_eq!(
+            result,
+            Err(WrongStateError {
+                actual: State::ExitDelay,
+                expected: State::Disarmed,
+            })
+        );
         assert_eq!(alarm.state(), State::ExitDelay);
     }
 
@@ -368,7 +365,13 @@ mod tests {
     fn complete_exit_delay_from_disarmed_errors() {
         let mut alarm = Alarm::new();
         let result = alarm.complete_exit_delay();
-        assert_eq!(result, Err(NotInExitDelayError(State::Disarmed)));
+        assert_eq!(
+            result,
+            Err(WrongStateError {
+                actual: State::Disarmed,
+                expected: State::ExitDelay,
+            })
+        );
         assert_eq!(alarm.state(), State::Disarmed);
     }
 
@@ -402,7 +405,13 @@ mod tests {
     fn complete_entry_delay_from_other_state_errors() {
         let mut alarm = Alarm::new();
         let result = alarm.complete_entry_delay();
-        assert_eq!(result, Err(NotInEntryDelayError(State::Disarmed)));
+        assert_eq!(
+            result,
+            Err(WrongStateError {
+                actual: State::Disarmed,
+                expected: State::EntryDelay,
+            })
+        );
         assert_eq!(alarm.state(), State::Disarmed);
     }
 

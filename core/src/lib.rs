@@ -62,6 +62,25 @@ impl fmt::Display for UnknownZoneError {
 
 impl std::error::Error for UnknownZoneError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveZoneError {
+    UnknownZone(u32),
+    ZoneTriggered(u32),
+}
+
+impl fmt::Display for RemoveZoneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RemoveZoneError::UnknownZone(id) => write!(f, "zone {id} is not registered"),
+            RemoveZoneError::ZoneTriggered(id) => {
+                write!(f, "zone {id} must be Clear before it can be removed")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RemoveZoneError {}
+
 struct Zone {
     kind: ZoneKind,
     status: ZoneStatus,
@@ -121,6 +140,26 @@ impl Alarm {
 
     pub fn zone_status(&self, id: u32) -> Option<ZoneStatus> {
         self.zones.get(&id).map(|zone| zone.status)
+    }
+
+    pub fn list_zones(&self) -> Vec<(u32, ZoneKind, ZoneStatus)> {
+        self.zones
+            .iter()
+            .map(|(&id, zone)| (id, zone.kind, zone.status))
+            .collect()
+    }
+
+    pub fn remove_zone(&mut self, id: u32) -> Result<(), RemoveZoneError> {
+        match self.zones.get(&id) {
+            None => Err(RemoveZoneError::UnknownZone(id)),
+            Some(zone) if zone.status == ZoneStatus::Triggered => {
+                Err(RemoveZoneError::ZoneTriggered(id))
+            }
+            Some(_) => {
+                self.zones.remove(&id);
+                Ok(())
+            }
+        }
     }
 
     pub fn all_zones_clear(&self) -> bool {
@@ -421,5 +460,70 @@ mod tests {
         let result = alarm.complete_entry_delay();
         assert_eq!(result, Ok(()));
         assert_eq!(alarm.state(), State::Triggered);
+    }
+
+    #[test]
+    fn list_zones_empty_with_no_zones_registered() {
+        let alarm = Alarm::new();
+        assert_eq!(alarm.list_zones(), Vec::new());
+    }
+
+    #[test]
+    fn list_zones_returns_registered_entries() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.add_zone(2, ZoneKind::Delay).unwrap();
+        alarm.report_zone_event(2, ZoneStatus::Triggered).unwrap();
+
+        let mut zones = alarm.list_zones();
+        zones.sort_by_key(|(id, _, _)| *id);
+        assert_eq!(
+            zones,
+            vec![
+                (1, ZoneKind::Instant, ZoneStatus::Clear),
+                (2, ZoneKind::Delay, ZoneStatus::Triggered),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_zone_unknown_id_errors() {
+        let mut alarm = Alarm::new();
+        let result = alarm.remove_zone(42);
+        assert_eq!(result, Err(RemoveZoneError::UnknownZone(42)));
+    }
+
+    #[test]
+    fn remove_zone_triggered_errors_and_zone_remains() {
+        let mut alarm = armed_alarm();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+
+        let result = alarm.remove_zone(1);
+        assert_eq!(result, Err(RemoveZoneError::ZoneTriggered(1)));
+        assert_eq!(alarm.zone_status(1), Some(ZoneStatus::Triggered));
+    }
+
+    #[test]
+    fn remove_zone_triggered_errors_even_when_alarm_disarmed() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+        alarm.report_zone_event(1, ZoneStatus::Triggered).unwrap();
+        assert_eq!(alarm.state(), State::Disarmed);
+
+        let result = alarm.remove_zone(1);
+        assert_eq!(result, Err(RemoveZoneError::ZoneTriggered(1)));
+        assert_eq!(alarm.zone_status(1), Some(ZoneStatus::Triggered));
+    }
+
+    #[test]
+    fn remove_zone_clear_succeeds_and_disappears() {
+        let mut alarm = Alarm::new();
+        alarm.add_zone(1, ZoneKind::Instant).unwrap();
+
+        let result = alarm.remove_zone(1);
+        assert_eq!(result, Ok(()));
+        assert_eq!(alarm.zone_status(1), None);
+        assert_eq!(alarm.list_zones(), Vec::new());
     }
 }

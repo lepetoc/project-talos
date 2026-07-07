@@ -26,7 +26,12 @@ mod tests {
     #[tokio::test]
     async fn health_returns_ok() {
         let response = app()
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

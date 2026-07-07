@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod routes;
+mod timers;
 
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +49,26 @@ async fn main() {
         std::process::exit(1);
     }
     let alarm = Arc::new(Mutex::new(alarm));
+
+    let exit_delay = timers::exit_delay_from_env();
+    let entry_delay = timers::entry_delay_from_env();
+    {
+        let alarm = Arc::clone(&alarm);
+        tokio::spawn(async move {
+            let mut tracker = timers::StateTracker::new();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                timers::check(
+                    &alarm,
+                    &mut tracker,
+                    exit_delay,
+                    entry_delay,
+                    std::time::Instant::now(),
+                );
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await

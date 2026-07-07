@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -42,6 +42,21 @@ pub struct ZoneResponse {
     status: String,
 }
 
+#[derive(Serialize)]
+pub struct StateResponse {
+    state: String,
+}
+
+fn state_to_str(state: talos_core::State) -> &'static str {
+    match state {
+        talos_core::State::Disarmed => "Disarmed",
+        talos_core::State::ExitDelay => "ExitDelay",
+        talos_core::State::Armed => "Armed",
+        talos_core::State::EntryDelay => "EntryDelay",
+        talos_core::State::Triggered => "Triggered",
+    }
+}
+
 enum ApiError {
     BadRequest(&'static str),
     Unauthorized(&'static str),
@@ -72,6 +87,9 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(login))
         .route("/zones", post(create_zone).get(list_zones))
         .route("/zones/{id}", delete(delete_zone))
+        .route("/arm", post(arm))
+        .route("/disarm", post(disarm))
+        .route("/state", get(get_state))
 }
 
 /// Creates a user account.
@@ -203,6 +221,32 @@ async fn delete_zone(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn arm(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+) -> Result<Json<StateResponse>, ApiError> {
+    let mut alarm = state.alarm.lock().unwrap();
+    alarm.arm().map_err(|_| ApiError::Conflict)?;
+    Ok(Json(StateResponse {
+        state: state_to_str(alarm.state()).to_string(),
+    }))
+}
+
+async fn disarm(State(state): State<AppState>, _auth: AuthUser) -> Json<StateResponse> {
+    let mut alarm = state.alarm.lock().unwrap();
+    alarm.disarm();
+    Json(StateResponse {
+        state: state_to_str(alarm.state()).to_string(),
+    })
+}
+
+async fn get_state(State(state): State<AppState>, _auth: AuthUser) -> Json<StateResponse> {
+    let alarm = state.alarm.lock().unwrap();
+    Json(StateResponse {
+        state: state_to_str(alarm.state()).to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -664,5 +708,141 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    fn post_request(uri: &str, token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().method("POST").uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn arm_succeeds_and_state_reports_exit_delay() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let arm_response = router
+            .clone()
+            .oneshot(post_request("/arm", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(arm_response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(arm_response).await,
+            json!({ "state": "ExitDelay" })
+        );
+
+        let state_response = router
+            .oneshot(get_request("/state", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(state_response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(state_response).await,
+            json!({ "state": "ExitDelay" })
+        );
+    }
+
+    #[tokio::test]
+    async fn arming_twice_conflicts_and_state_unchanged() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(post_request("/arm", Some(&token)))
+            .await
+            .unwrap();
+
+        let second_arm_response = router
+            .clone()
+            .oneshot(post_request("/arm", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(second_arm_response.status(), StatusCode::CONFLICT);
+
+        let state_response = router
+            .oneshot(get_request("/state", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(state_response).await,
+            json!({ "state": "ExitDelay" })
+        );
+    }
+
+    #[tokio::test]
+    async fn disarm_from_disarmed_succeeds() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let disarm_response = router
+            .clone()
+            .oneshot(post_request("/disarm", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(disarm_response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(disarm_response).await,
+            json!({ "state": "Disarmed" })
+        );
+
+        let state_response = router
+            .oneshot(get_request("/state", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(state_response).await,
+            json!({ "state": "Disarmed" })
+        );
+    }
+
+    #[tokio::test]
+    async fn disarm_after_arm_succeeds_and_state_reports_disarmed() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(post_request("/arm", Some(&token)))
+            .await
+            .unwrap();
+
+        let disarm_response = router
+            .clone()
+            .oneshot(post_request("/disarm", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(disarm_response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(disarm_response).await,
+            json!({ "state": "Disarmed" })
+        );
+
+        let state_response = router
+            .oneshot(get_request("/state", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(state_response).await,
+            json!({ "state": "Disarmed" })
+        );
+    }
+
+    #[tokio::test]
+    async fn arm_and_disarm_without_token_fail() {
+        let router = app(test_support::state().await);
+
+        let arm_response = router
+            .clone()
+            .oneshot(post_request("/arm", None))
+            .await
+            .unwrap();
+        assert_eq!(arm_response.status(), StatusCode::UNAUTHORIZED);
+
+        let disarm_response = router.oneshot(post_request("/disarm", None)).await.unwrap();
+        assert_eq!(disarm_response.status(), StatusCode::UNAUTHORIZED);
     }
 }

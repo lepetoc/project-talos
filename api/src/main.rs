@@ -1,3 +1,5 @@
+mod db;
+
 use axum::{routing::get, Router};
 
 fn app() -> Router {
@@ -10,6 +12,14 @@ async fn health() -> &'static str {
 
 #[tokio::main]
 async fn main() {
+    let _pool = match db::init_pool("sqlite://talos.db").await {
+        Ok(pool) => pool,
+        Err(err) => {
+            eprintln!("failed to initialize database: {err}");
+            std::process::exit(1);
+        }
+    };
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();

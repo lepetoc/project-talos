@@ -2,6 +2,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 
+// Not wired into any route yet; used only by the migration test until a later phase.
+#[allow(dead_code)]
 #[derive(sqlx::FromRow)]
 pub struct User {
     pub id: i64,

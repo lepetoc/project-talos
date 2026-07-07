@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 argon2 = "0.5.3"
 axum = "0.8.9"
+talos_core = { path = "../core", package = "core" }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 password-hash = { version = "0.5", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }

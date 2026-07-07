@@ -1,0 +1,4 @@
+CREATE TABLE zones (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL
+);

@@ -2,12 +2,15 @@ mod auth;
 mod db;
 mod routes;
 
+use std::sync::{Arc, Mutex};
+
 use axum::{routing::get, Router};
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub jwt_secret: String,
+    pub alarm: Arc<Mutex<talos_core::Alarm>>,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -39,16 +42,32 @@ async fn main() {
         }
     };
 
+    let mut alarm = talos_core::Alarm::new();
+    if let Err(err) = db::replay_zones(&pool, &mut alarm).await {
+        eprintln!("failed to replay zones: {err}");
+        std::process::exit(1);
+    }
+    let alarm = Arc::new(Mutex::new(alarm));
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();
-    axum::serve(listener, app(AppState { pool, jwt_secret }))
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app(AppState {
+            pool,
+            jwt_secret,
+            alarm,
+        }),
+    )
+    .await
+    .unwrap();
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::sync::{Arc, Mutex};
+
     use crate::{db, AppState};
 
     pub(crate) async fn state() -> AppState {
@@ -56,6 +75,7 @@ pub(crate) mod test_support {
         AppState {
             pool,
             jwt_secret: "test-secret".to_string(),
+            alarm: Arc::new(Mutex::new(talos_core::Alarm::new())),
         }
     }
 }

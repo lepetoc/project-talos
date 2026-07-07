@@ -67,6 +67,57 @@ pub async fn insert_user(
     Ok(result.last_insert_rowid())
 }
 
+fn zone_kind_to_str(kind: talos_core::ZoneKind) -> &'static str {
+    match kind {
+        talos_core::ZoneKind::Delay => "Delay",
+        talos_core::ZoneKind::Instant => "Instant",
+    }
+}
+
+fn parse_zone_kind(raw: &str) -> sqlx::Result<talos_core::ZoneKind> {
+    match raw {
+        "Delay" => Ok(talos_core::ZoneKind::Delay),
+        "Instant" => Ok(talos_core::ZoneKind::Instant),
+        other => Err(sqlx::Error::Decode(
+            format!("unknown zone kind in database: {other}").into(),
+        )),
+    }
+}
+
+// Not called from any route yet; exercised by tests until a later phase wires up zone HTTP endpoints.
+#[allow(dead_code)]
+pub async fn insert_zone(
+    pool: &SqlitePool,
+    id: i64,
+    kind: talos_core::ZoneKind,
+) -> sqlx::Result<()> {
+    sqlx::query("INSERT INTO zones (id, kind) VALUES (?, ?)")
+        .bind(id)
+        .bind(zone_kind_to_str(kind))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn list_zones(pool: &SqlitePool) -> sqlx::Result<Vec<(i64, talos_core::ZoneKind)>> {
+    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, kind FROM zones")
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter()
+        .map(|(id, kind)| parse_zone_kind(&kind).map(|kind| (id, kind)))
+        .collect()
+}
+
+/// Rebuilds in-memory zone registration from what's persisted in the database.
+pub async fn replay_zones(pool: &SqlitePool, alarm: &mut talos_core::Alarm) -> sqlx::Result<()> {
+    for (id, kind) in list_zones(pool).await? {
+        alarm
+            .add_zone(id as u32, kind)
+            .map_err(|err| sqlx::Error::Decode(err.to_string().into()))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +141,60 @@ mod tests {
                 .unwrap();
 
         assert_eq!(user.username, "alice");
+    }
+
+    #[tokio::test]
+    async fn insert_zone_then_list_zones_returns_it() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        insert_zone(&pool, 1, talos_core::ZoneKind::Delay)
+            .await
+            .unwrap();
+        insert_zone(&pool, 2, talos_core::ZoneKind::Instant)
+            .await
+            .unwrap();
+
+        let mut zones = list_zones(&pool).await.unwrap();
+        zones.sort_by_key(|(id, _)| *id);
+        assert_eq!(
+            zones,
+            vec![
+                (1, talos_core::ZoneKind::Delay),
+                (2, talos_core::ZoneKind::Instant)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_zones_populates_alarm_from_database() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        insert_zone(&pool, 1, talos_core::ZoneKind::Delay)
+            .await
+            .unwrap();
+        insert_zone(&pool, 2, talos_core::ZoneKind::Instant)
+            .await
+            .unwrap();
+
+        let mut alarm = talos_core::Alarm::new();
+        replay_zones(&pool, &mut alarm).await.unwrap();
+
+        let mut zones = alarm.list_zones();
+        zones.sort_by_key(|(id, _, _)| *id);
+        assert_eq!(
+            zones,
+            vec![
+                (
+                    1,
+                    talos_core::ZoneKind::Delay,
+                    talos_core::ZoneStatus::Clear
+                ),
+                (
+                    2,
+                    talos_core::ZoneKind::Instant,
+                    talos_core::ZoneStatus::Clear
+                ),
+            ]
+        );
     }
 }

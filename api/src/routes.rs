@@ -1,7 +1,7 @@
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{delete, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -29,8 +29,23 @@ pub struct TokenResponse {
     token: String,
 }
 
+#[derive(Deserialize)]
+pub struct CreateZoneRequest {
+    id: u32,
+    kind: String,
+}
+
+#[derive(Serialize)]
+pub struct ZoneResponse {
+    id: u32,
+    kind: String,
+    status: String,
+}
+
 enum ApiError {
+    BadRequest(&'static str),
     Unauthorized(&'static str),
+    NotFound,
     Conflict,
     Internal,
 }
@@ -38,9 +53,13 @@ enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
+            ApiError::BadRequest(message) => {
+                (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
+            }
             ApiError::Unauthorized(message) => {
                 (StatusCode::UNAUTHORIZED, Json(json!({ "error": message }))).into_response()
             }
+            ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
             ApiError::Conflict => StatusCode::CONFLICT.into_response(),
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
@@ -51,6 +70,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
+        .route("/zones", post(create_zone).get(list_zones))
+        .route("/zones/{id}", delete(delete_zone))
 }
 
 /// Creates a user account.
@@ -100,6 +121,90 @@ async fn login(
     Ok(Json(TokenResponse { token }))
 }
 
+async fn create_zone(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Json(payload): Json<CreateZoneRequest>,
+) -> Result<StatusCode, ApiError> {
+    let kind = db::parse_zone_kind(&payload.kind)
+        .map_err(|_| ApiError::BadRequest("invalid zone kind"))?;
+
+    {
+        let mut alarm = state.alarm.lock().unwrap();
+        if alarm.add_zone(payload.id, kind).is_err() {
+            return Err(ApiError::Conflict);
+        }
+    }
+
+    if db::insert_zone(&state.pool, payload.id as i64, kind)
+        .await
+        .is_err()
+    {
+        state
+            .alarm
+            .lock()
+            .unwrap()
+            .remove_zone(payload.id)
+            .expect("a zone just added is always Clear and removable");
+        return Err(ApiError::Internal);
+    }
+
+    Ok(StatusCode::CREATED)
+}
+
+async fn list_zones(State(state): State<AppState>, _auth: AuthUser) -> Json<Vec<ZoneResponse>> {
+    let zones = state.alarm.lock().unwrap().list_zones();
+    Json(
+        zones
+            .into_iter()
+            .map(|(id, kind, status)| ZoneResponse {
+                id,
+                kind: db::zone_kind_to_str(kind).to_string(),
+                status: match status {
+                    talos_core::ZoneStatus::Clear => "Clear",
+                    talos_core::ZoneStatus::Triggered => "Triggered",
+                }
+                .to_string(),
+            })
+            .collect(),
+    )
+}
+
+async fn delete_zone(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(id): Path<u32>,
+) -> Result<StatusCode, ApiError> {
+    let kind = {
+        let mut alarm = state.alarm.lock().unwrap();
+        let kind = alarm
+            .list_zones()
+            .into_iter()
+            .find(|(zone_id, _, _)| *zone_id == id)
+            .map(|(_, kind, _)| kind);
+
+        match alarm.remove_zone(id) {
+            Ok(()) => {}
+            Err(talos_core::RemoveZoneError::UnknownZone(_)) => return Err(ApiError::NotFound),
+            Err(talos_core::RemoveZoneError::ZoneTriggered(_)) => return Err(ApiError::Conflict),
+        }
+
+        kind.expect("zone existed a moment ago since remove_zone just succeeded")
+    };
+
+    if db::delete_zone(&state.pool, id as i64).await.is_err() {
+        state
+            .alarm
+            .lock()
+            .unwrap()
+            .add_zone(id, kind)
+            .expect("zone should not already exist right after its own removal");
+        return Err(ApiError::Internal);
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,11 +224,54 @@ mod tests {
         builder.body(Body::from(body.to_string())).unwrap()
     }
 
+    fn get_request(uri: &str, token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    fn delete_request(uri: &str, token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().method("DELETE").uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
     async fn body_json(response: Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn register_and_login(router: &Router, username: &str, password: &str) -> String {
+        router
+            .clone()
+            .oneshot(json_request(
+                "/auth/register",
+                json!({ "username": username, "password": password }),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let login_response = router
+            .clone()
+            .oneshot(json_request(
+                "/auth/login",
+                json!({ "username": username, "password": password }),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        body_json(login_response).await["token"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     #[tokio::test]
@@ -315,5 +463,206 @@ mod tests {
         let unknown_username_body = body_json(unknown_username_response).await;
 
         assert_eq!(wrong_password_body, unknown_username_body);
+    }
+
+    #[tokio::test]
+    async fn create_zone_without_token_fails() {
+        let router = app(test_support::state().await);
+
+        let response = router
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Delay" }),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn create_zone_with_token_succeeds_and_appears_in_list() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let create_response = router
+            .clone()
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Delay" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+
+        let list_response = router
+            .oneshot(get_request("/zones", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let zones = body_json(list_response).await;
+        assert_eq!(
+            zones,
+            json!([{ "id": 1, "kind": "Delay", "status": "Clear" }])
+        );
+    }
+
+    #[tokio::test]
+    async fn create_zone_with_duplicate_id_conflicts() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Delay" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        let response = router
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Instant" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn list_zones_reflects_current_status() {
+        let state = test_support::state().await;
+        let router = app(state.clone());
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Instant" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        state
+            .alarm
+            .lock()
+            .unwrap()
+            .report_zone_event(1, talos_core::ZoneStatus::Triggered)
+            .unwrap();
+
+        let response = router
+            .oneshot(get_request("/zones", Some(&token)))
+            .await
+            .unwrap();
+        let zones = body_json(response).await;
+        assert_eq!(
+            zones,
+            json!([{ "id": 1, "kind": "Instant", "status": "Triggered" }])
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_clear_zone_succeeds_and_disappears() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Delay" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        let delete_response = router
+            .clone()
+            .oneshot(delete_request("/zones/1", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+        let list_response = router
+            .oneshot(get_request("/zones", Some(&token)))
+            .await
+            .unwrap();
+        let zones = body_json(list_response).await;
+        assert_eq!(zones, json!([]));
+    }
+
+    #[tokio::test]
+    async fn delete_triggered_zone_conflicts_and_remains() {
+        let state = test_support::state().await;
+        let router = app(state.clone());
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Instant" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        state
+            .alarm
+            .lock()
+            .unwrap()
+            .report_zone_event(1, talos_core::ZoneStatus::Triggered)
+            .unwrap();
+
+        let delete_response = router
+            .clone()
+            .oneshot(delete_request("/zones/1", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::CONFLICT);
+
+        let list_response = router
+            .oneshot(get_request("/zones", Some(&token)))
+            .await
+            .unwrap();
+        let zones = body_json(list_response).await;
+        assert_eq!(
+            zones,
+            json!([{ "id": 1, "kind": "Instant", "status": "Triggered" }])
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_unknown_zone_not_found() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let response = router
+            .oneshot(delete_request("/zones/42", Some(&token)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_zone_without_token_fails() {
+        let router = app(test_support::state().await);
+
+        let response = router
+            .oneshot(delete_request("/zones/1", None))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

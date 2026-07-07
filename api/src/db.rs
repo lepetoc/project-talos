@@ -67,14 +67,14 @@ pub async fn insert_user(
     Ok(result.last_insert_rowid())
 }
 
-fn zone_kind_to_str(kind: talos_core::ZoneKind) -> &'static str {
+pub(crate) fn zone_kind_to_str(kind: talos_core::ZoneKind) -> &'static str {
     match kind {
         talos_core::ZoneKind::Delay => "Delay",
         talos_core::ZoneKind::Instant => "Instant",
     }
 }
 
-fn parse_zone_kind(raw: &str) -> sqlx::Result<talos_core::ZoneKind> {
+pub(crate) fn parse_zone_kind(raw: &str) -> sqlx::Result<talos_core::ZoneKind> {
     match raw {
         "Delay" => Ok(talos_core::ZoneKind::Delay),
         "Instant" => Ok(talos_core::ZoneKind::Instant),
@@ -84,8 +84,6 @@ fn parse_zone_kind(raw: &str) -> sqlx::Result<talos_core::ZoneKind> {
     }
 }
 
-// Not called from any route yet; exercised by tests until a later phase wires up zone HTTP endpoints.
-#[allow(dead_code)]
 pub async fn insert_zone(
     pool: &SqlitePool,
     id: i64,
@@ -94,6 +92,14 @@ pub async fn insert_zone(
     sqlx::query("INSERT INTO zones (id, kind) VALUES (?, ?)")
         .bind(id)
         .bind(zone_kind_to_str(kind))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_zone(pool: &SqlitePool, id: i64) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM zones WHERE id = ?")
+        .bind(id)
         .execute(pool)
         .await?;
     Ok(())

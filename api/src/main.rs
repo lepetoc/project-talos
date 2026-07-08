@@ -12,6 +12,7 @@ pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub jwt_secret: String,
     pub alarm: Arc<Mutex<talos_core::Alarm>>,
+    pub tx: tokio::sync::broadcast::Sender<talos_core::State>,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -49,11 +50,13 @@ async fn main() {
         std::process::exit(1);
     }
     let alarm = Arc::new(Mutex::new(alarm));
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
 
     let exit_delay = timers::exit_delay_from_env();
     let entry_delay = timers::entry_delay_from_env();
     {
         let alarm = Arc::clone(&alarm);
+        let tx = tx.clone();
         tokio::spawn(async move {
             let mut tracker = timers::StateTracker::new();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -65,6 +68,7 @@ async fn main() {
                     exit_delay,
                     entry_delay,
                     std::time::Instant::now(),
+                    &tx,
                 );
             }
         });
@@ -79,6 +83,7 @@ async fn main() {
             pool,
             jwt_secret,
             alarm,
+            tx,
         }),
     )
     .await
@@ -93,10 +98,12 @@ pub(crate) mod test_support {
 
     pub(crate) async fn state() -> AppState {
         let pool = db::init_pool("sqlite::memory:").await.unwrap();
+        let (tx, _rx) = tokio::sync::broadcast::channel(16);
         AppState {
             pool,
             jwt_secret: "test-secret".to_string(),
             alarm: Arc::new(Mutex::new(talos_core::Alarm::new())),
+            tx,
         }
     }
 }

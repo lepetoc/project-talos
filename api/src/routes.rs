@@ -225,16 +225,20 @@ async fn arm(
 ) -> Result<Json<StateResponse>, ApiError> {
     let mut alarm = state.alarm.lock().unwrap();
     alarm.arm().map_err(|_| ApiError::Conflict)?;
+    let new_state = alarm.state();
+    let _ = state.tx.send(new_state);
     Ok(Json(StateResponse {
-        state: state_to_str(alarm.state()).to_string(),
+        state: state_to_str(new_state).to_string(),
     }))
 }
 
 async fn disarm(State(state): State<AppState>, _auth: AuthUser) -> Json<StateResponse> {
     let mut alarm = state.alarm.lock().unwrap();
     alarm.disarm();
+    let new_state = alarm.state();
+    let _ = state.tx.send(new_state);
     Json(StateResponse {
-        state: state_to_str(alarm.state()).to_string(),
+        state: state_to_str(new_state).to_string(),
     })
 }
 
@@ -842,6 +846,45 @@ mod tests {
             body_json(state_response).await,
             json!({ "state": "Disarmed" })
         );
+    }
+
+    #[tokio::test]
+    async fn arm_sends_new_state_on_channel() {
+        let state = test_support::state().await;
+        let mut rx = state.tx.subscribe();
+        let router = app(state.clone());
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let response = router
+            .oneshot(post_request("/arm", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert_eq!(rx.recv().await.unwrap(), talos_core::State::ExitDelay);
+    }
+
+    #[tokio::test]
+    async fn disarm_sends_new_state_on_channel() {
+        let state = test_support::state().await;
+        let mut rx = state.tx.subscribe();
+        let router = app(state.clone());
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(post_request("/arm", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(rx.recv().await.unwrap(), talos_core::State::ExitDelay);
+
+        let response = router
+            .oneshot(post_request("/disarm", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        assert_eq!(rx.recv().await.unwrap(), talos_core::State::Disarmed);
     }
 
     #[tokio::test]

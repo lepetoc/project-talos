@@ -59,10 +59,11 @@ pub fn check(
                 let _ = tx.send(alarm.state());
             }
         }
-        talos_core::State::EntryDelay if now.duration_since(observed_at) >= entry_delay => {
-            if alarm.complete_entry_delay().is_ok() {
-                let _ = tx.send(alarm.state());
-            }
+        talos_core::State::EntryDelay
+            if now.duration_since(observed_at) >= entry_delay
+                && alarm.complete_entry_delay().is_ok() =>
+        {
+            let _ = tx.send(alarm.state());
         }
         _ => {}
     }

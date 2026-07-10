@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 argon2 = "0.5.3"
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["ws"] }
 talos_core = { path = "../core", package = "core" }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 password-hash = { version = "0.5", features = ["getrandom"] }
@@ -15,4 +15,6 @@ sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "macros"] }
 tokio = { version = "1.52.3", default-features = false, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 
 [dev-dependencies]
+futures-util = "0.3.32"
+tokio-tungstenite = "0.29.0"
 tower = { version = "0.5.3", features = ["util"] }

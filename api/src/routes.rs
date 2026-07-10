@@ -1,3 +1,6 @@
+use std::time::Duration;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -9,6 +12,8 @@ use serde_json::json;
 use crate::auth::{self, AuthUser};
 use crate::db;
 use crate::AppState;
+
+const WS_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 const INVALID_CREDENTIALS: &str = "invalid username or password";
 
@@ -90,6 +95,7 @@ pub fn router() -> Router<AppState> {
         .route("/arm", post(arm))
         .route("/disarm", post(disarm))
         .route("/state", get(get_state))
+        .route("/ws", get(ws_handler))
 }
 
 /// Creates a user account.
@@ -247,6 +253,53 @@ async fn get_state(State(state): State<AppState>, _auth: AuthUser) -> Json<State
     Json(StateResponse {
         state: state_to_str(alarm.state()).to_string(),
     })
+}
+
+/// Upgrades to a WebSocket connection. Unlike the other routes, this one has
+/// no `AuthUser` extractor: browsers cannot set an `Authorization` header
+/// when opening a WebSocket, so authentication instead happens over the
+/// socket itself once connected, in `handle_socket`.
+async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+async fn handle_socket(mut socket: WebSocket, state: AppState) {
+    let Ok(Some(Ok(Message::Text(token)))) =
+        tokio::time::timeout(WS_AUTH_TIMEOUT, socket.recv()).await
+    else {
+        return;
+    };
+
+    if auth::AuthUser::from_token(&token, &state.jwt_secret).is_err() {
+        return;
+    }
+
+    let current_state = {
+        let alarm = state.alarm.lock().unwrap();
+        state_to_str(alarm.state()).to_string()
+    };
+    if socket
+        .send(Message::Text(
+            json!({ "state": current_state }).to_string().into(),
+        ))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut rx = state.tx.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(new_state) => {
+                let message = json!({ "state": state_to_str(new_state) }).to_string();
+                if socket.send(Message::Text(message.into())).await.is_err() {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -900,5 +953,155 @@ mod tests {
 
         let disarm_response = router.oneshot(post_request("/disarm", None)).await.unwrap();
         assert_eq!(disarm_response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // `oneshot` cannot drive a WebSocket upgrade, so these tests bind the real
+    // app to an ephemeral local port and speak WebSocket (via
+    // `tokio-tungstenite`) and plain HTTP (hand-rolled over `TcpStream`) to it.
+    use futures_util::{SinkExt, StreamExt};
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    async fn spawn_test_server() -> SocketAddr {
+        let state = test_support::state().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = app(state);
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        addr
+    }
+
+    async fn http_request(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> (u16, serde_json::Value) {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+
+        let body_bytes = body.map(|value| value.to_string()).unwrap_or_default();
+        let mut request =
+            format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+        if let Some(token) = token {
+            request.push_str(&format!("Authorization: Bearer {token}\r\n"));
+        }
+        request.push_str("Content-Type: application/json\r\n");
+        request.push_str(&format!("Content-Length: {}\r\n\r\n", body_bytes.len()));
+        request.push_str(&body_bytes);
+
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+
+        let mut parts = response.splitn(2, "\r\n\r\n");
+        let head = parts.next().unwrap();
+        let body_str = parts.next().unwrap_or("");
+
+        let status = head
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let body_json = if body_str.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(body_str).unwrap()
+        };
+
+        (status, body_json)
+    }
+
+    async fn register_and_login_over_http(
+        addr: SocketAddr,
+        username: &str,
+        password: &str,
+    ) -> String {
+        let (status, _) = http_request(
+            addr,
+            "POST",
+            "/auth/register",
+            None,
+            Some(json!({ "username": username, "password": password })),
+        )
+        .await;
+        assert_eq!(status, 201);
+
+        let (status, body) = http_request(
+            addr,
+            "POST",
+            "/auth/login",
+            None,
+            Some(json!({ "username": username, "password": password })),
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        body["token"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn ws_with_invalid_token_closes_without_message() {
+        let addr = spawn_test_server().await;
+
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+            .await
+            .unwrap();
+        ws_stream
+            .send(WsMessage::Text("not-a-real-token".into()))
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(Duration::from_secs(2), ws_stream.next())
+            .await
+            .expect("connection should close promptly after an invalid token");
+
+        if let Some(Ok(WsMessage::Text(_) | WsMessage::Binary(_))) = received {
+            panic!("server must not send any message for an invalid token");
+        }
+    }
+
+    #[tokio::test]
+    async fn ws_with_valid_token_streams_state_updates() {
+        let addr = spawn_test_server().await;
+        let token = register_and_login_over_http(addr, "alice", "hunter2").await;
+
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+            .await
+            .unwrap();
+        ws_stream
+            .send(WsMessage::Text(token.clone().into()))
+            .await
+            .unwrap();
+
+        let first = ws_stream.next().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&first.into_text().unwrap()).unwrap(),
+            json!({ "state": "Disarmed" })
+        );
+
+        let (status, _) = http_request(addr, "POST", "/arm", Some(&token), None).await;
+        assert_eq!(status, 200);
+
+        let second = tokio::time::timeout(Duration::from_secs(2), ws_stream.next())
+            .await
+            .expect("expected a state update after arming")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&second.into_text().unwrap()).unwrap(),
+            json!({ "state": "ExitDelay" })
+        );
     }
 }

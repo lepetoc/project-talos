@@ -69,6 +69,18 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
+    /// Validates a raw JWT (no `Bearer ` prefix) against the same secret and
+    /// logic used for header-based authentication. Used by the `/ws` handler,
+    /// which authenticates via the first message instead of a header.
+    pub fn from_token(token: &str, secret: &str) -> Result<Self, StatusCode> {
+        let claims = decode_claims(token, secret).map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let user_id = claims
+            .sub
+            .parse::<i64>()
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+        Ok(AuthUser { user_id })
+    }
+
     fn from_headers(headers: &axum::http::HeaderMap, secret: &str) -> Result<Self, StatusCode> {
         let value = headers
             .get(header::AUTHORIZATION)
@@ -77,12 +89,7 @@ impl AuthUser {
         let token = value
             .strip_prefix("Bearer ")
             .ok_or(StatusCode::UNAUTHORIZED)?;
-        let claims = decode_claims(token, secret).map_err(|_| StatusCode::UNAUTHORIZED)?;
-        let user_id = claims
-            .sub
-            .parse::<i64>()
-            .map_err(|_| StatusCode::UNAUTHORIZED)?;
-        Ok(AuthUser { user_id })
+        Self::from_token(token, secret)
     }
 }
 

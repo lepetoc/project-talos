@@ -6,6 +6,7 @@ mod timers;
 use std::sync::{Arc, Mutex};
 
 use axum::{routing::get, Router};
+use tower_http::services::ServeDir;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -15,10 +16,16 @@ pub struct AppState {
     pub tx: tokio::sync::broadcast::Sender<talos_core::State>,
 }
 
+/// The frontend lives at the repository root, alongside `core` and `api`, not
+/// nested inside this crate — resolved from `CARGO_MANIFEST_DIR` so it works
+/// regardless of the process's current working directory.
+const FRONTEND_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../frontend");
+
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .merge(routes::router())
+        .fallback_service(ServeDir::new(FRONTEND_DIR))
         .with_state(state)
 }
 

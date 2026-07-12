@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talos</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+<script>
+function app() {
+    return {
+        token: localStorage.getItem('talos_token'),
+        view: 'login',
+        loginForm: { username: '', password: '' },
+        registerForm: { username: '', password: '' },
+        loginError: '',
+        registerError: '',
+        registerMessage: '',
+        health: 'unknown',
+
+        init() {
+            if (this.token) {
+                this.checkHealth();
+            }
+        },
+
+        async login() {
+            this.loginError = '';
+            try {
+                const res = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.loginForm),
+                });
+                if (!res.ok) {
+                    this.loginError = `Login failed (HTTP ${res.status})`;
+                    return;
+                }
+                const data = await res.json();
+                localStorage.setItem('talos_token', data.token);
+                this.token = data.token;
+                this.loginForm = { username: '', password: '' };
+                this.checkHealth();
+            } catch (err) {
+                this.loginError = `Login failed: ${err}`;
+            }
+        },
+
+        async register() {
+            this.registerError = '';
+            this.registerMessage = '';
+            try {
+                const headers = { 'Content-Type': 'application/json' };
+                const existingToken = localStorage.getItem('talos_token');
+                if (existingToken) {
+                    headers['Authorization'] = `Bearer ${existingToken}`;
+                }
+                const res = await fetch('/auth/register', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(this.registerForm),
+                });
+                if (!res.ok) {
+                    this.registerError = `Registration failed (HTTP ${res.status})`;
+                    return;
+                }
+                this.registerMessage = 'Registered. You can now log in.';
+                this.registerForm = { username: '', password: '' };
+                this.view = 'login';
+            } catch (err) {
+                this.registerError = `Registration failed: ${err}`;
+            }
+        },
+
+        async checkHealth() {
+            this.health = 'checking...';
+            try {
+                const res = await fetch('/health');
+                this.health = res.ok ? 'reachable' : `unreachable (HTTP ${res.status})`;
+            } catch (err) {
+                this.health = 'unreachable';
+            }
+        },
+
+        logout() {
+            localStorage.removeItem('talos_token');
+            this.token = null;
+            this.view = 'login';
+        },
+    };
+}
+</script>
+<style>
+    body { font-family: system-ui, sans-serif; max-width: 24rem; margin: 3rem auto; padding: 0 1rem; }
+    label { display: block; margin-bottom: 0.75rem; }
+    input { display: block; width: 100%; box-sizing: border-box; padding: 0.4rem; margin-top: 0.2rem; }
+    button { padding: 0.4rem 0.8rem; }
+    .error { color: #b00020; }
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+    <h1>Talos</h1>
+
+    <template x-if="!token">
+        <div>
+            <template x-if="view === 'login'">
+                <form @submit.prevent="login()">
+                    <h2>Log in</h2>
+                    <label>
+                        Username
+                        <input type="text" x-model="loginForm.username" required autocomplete="username">
+                    </label>
+                    <label>
+                        Password
+                        <input type="password" x-model="loginForm.password" required autocomplete="current-password">
+                    </label>
+                    <button type="submit">Log in</button>
+                    <p class="error" x-show="loginError" x-text="loginError"></p>
+                </form>
+            </template>
+
+            <template x-if="view === 'register'">
+                <form @submit.prevent="register()">
+                    <h2>Register</h2>
+                    <label>
+                        Username
+                        <input type="text" x-model="registerForm.username" required autocomplete="username">
+                    </label>
+                    <label>
+                        Password
+                        <input type="password" x-model="registerForm.password" required autocomplete="new-password">
+                    </label>
+                    <button type="submit">Register</button>
+                    <p x-show="registerMessage" x-text="registerMessage"></p>
+                    <p class="error" x-show="registerError" x-text="registerError"></p>
+                </form>
+            </template>
+
+            <p>
+                <a href="#"
+                   @click.prevent="view = view === 'login' ? 'register' : 'login'"
+                   x-text="view === 'login' ? 'Need an account? Register' : 'Have an account? Log in'"></a>
+            </p>
+        </div>
+    </template>
+
+    <template x-if="token">
+        <div>
+            <p>Logged in — a token is present.</p>
+            <p>Server status: <span x-text="health"></span>
+                <button @click="checkHealth()">Check health</button>
+            </p>
+            <button @click="logout()">Log out</button>
+        </div>
+    </template>
+</body>
+</html>

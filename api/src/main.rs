@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::{routing::get, Router};
 use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +27,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .merge(routes::router())
         .fallback_service(ServeDir::new(FRONTEND_DIR))
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
@@ -35,6 +37,13 @@ async fn health() -> &'static str {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     // Loads variables from a `.env` file (searching this directory and its
     // parents) into the process environment, if one exists. Ignored if
     // absent, since in production the variables are typically set directly.

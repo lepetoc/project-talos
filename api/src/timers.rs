@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tracing::{info, warn};
+
 const DEFAULT_DELAY_SECS: u64 = 30;
 
 pub fn exit_delay_from_env() -> Duration {
@@ -56,16 +58,28 @@ pub fn check(
     match state {
         talos_core::State::ExitDelay if now.duration_since(observed_at) >= exit_delay => {
             if alarm.complete_exit_delay() == Ok(true) {
-                let _ = tx.send(alarm.state());
+                let new_state = alarm.state();
+                let _ = tx.send(new_state);
+                log_state_transition(new_state);
             }
         }
         talos_core::State::EntryDelay
             if now.duration_since(observed_at) >= entry_delay
                 && alarm.complete_entry_delay().is_ok() =>
         {
-            let _ = tx.send(alarm.state());
+            let new_state = alarm.state();
+            let _ = tx.send(new_state);
+            log_state_transition(new_state);
         }
         _ => {}
+    }
+}
+
+fn log_state_transition(new_state: talos_core::State) {
+    if new_state == talos_core::State::Triggered {
+        warn!(state = ?new_state, "alarm state transition");
+    } else {
+        info!(state = ?new_state, "alarm state transition");
     }
 }
 

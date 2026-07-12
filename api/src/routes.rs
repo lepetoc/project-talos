@@ -8,6 +8,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tracing::{info, warn};
 
 use crate::auth::{self, AuthUser};
 use crate::db;
@@ -113,14 +114,25 @@ async fn register(
         .await
         .map_err(|_| ApiError::Internal)?;
 
-    if user_count > 0 && auth.is_none() {
+    let is_bootstrap = user_count == 0;
+    if !is_bootstrap && auth.is_none() {
         return Err(ApiError::Unauthorized("authentication required"));
     }
 
     let password_hash = auth::hash_password(&payload.password).map_err(|_| ApiError::Internal)?;
 
     match db::insert_user(&state.pool, &payload.username, &password_hash).await {
-        Ok(_) => Ok(StatusCode::CREATED),
+        Ok(_) => {
+            if is_bootstrap {
+                warn!(
+                    username = %payload.username,
+                    "first account created via unauthenticated bootstrap"
+                );
+            } else {
+                info!(username = %payload.username, "registered new account");
+            }
+            Ok(StatusCode::CREATED)
+        }
         Err(db::InsertUserError::UsernameTaken) => Err(ApiError::Conflict),
         Err(db::InsertUserError::Other(_)) => Err(ApiError::Internal),
     }
@@ -132,16 +144,24 @@ async fn login(
 ) -> Result<Json<TokenResponse>, ApiError> {
     let user = db::find_user_by_username(&state.pool, &payload.username)
         .await
-        .map_err(|_| ApiError::Internal)?
-        .ok_or(ApiError::Unauthorized(INVALID_CREDENTIALS))?;
+        .map_err(|_| ApiError::Internal)?;
+    let user = match user {
+        Some(user) => user,
+        None => {
+            warn!(username = %payload.username, "login failed: unknown username");
+            return Err(ApiError::Unauthorized(INVALID_CREDENTIALS));
+        }
+    };
 
     let valid = auth::verify_password(&payload.password, &user.password_hash)
         .map_err(|_| ApiError::Internal)?;
     if !valid {
+        warn!(username = %payload.username, "login failed: wrong password");
         return Err(ApiError::Unauthorized(INVALID_CREDENTIALS));
     }
 
     let token = auth::create_token(user.id, &state.jwt_secret).map_err(|_| ApiError::Internal)?;
+    info!(username = %payload.username, "login succeeded");
     Ok(Json(TokenResponse { token }))
 }
 
@@ -233,6 +253,7 @@ async fn arm(
     alarm.arm().map_err(|_| ApiError::Conflict)?;
     let new_state = alarm.state();
     let _ = state.tx.send(new_state);
+    log_state_transition(new_state);
     Ok(Json(StateResponse {
         state: state_to_str(new_state).to_string(),
     }))
@@ -243,9 +264,18 @@ async fn disarm(State(state): State<AppState>, _auth: AuthUser) -> Json<StateRes
     alarm.disarm();
     let new_state = alarm.state();
     let _ = state.tx.send(new_state);
+    log_state_transition(new_state);
     Json(StateResponse {
         state: state_to_str(new_state).to_string(),
     })
+}
+
+fn log_state_transition(new_state: talos_core::State) {
+    if new_state == talos_core::State::Triggered {
+        warn!(state = %state_to_str(new_state), "alarm state transition");
+    } else {
+        info!(state = %state_to_str(new_state), "alarm state transition");
+    }
 }
 
 async fn get_state(State(state): State<AppState>, _auth: AuthUser) -> Json<StateResponse> {

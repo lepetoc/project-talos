@@ -15,6 +15,7 @@ dependencies = [
  "argon2",
  "axum",
  "core",
+ "dotenvy",
  "futures-util",
  "jsonwebtoken",
  "password-hash",

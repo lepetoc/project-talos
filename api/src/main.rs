@@ -35,6 +35,11 @@ async fn health() -> &'static str {
 
 #[tokio::main]
 async fn main() {
+    // Loads variables from a `.env` file (searching this directory and its
+    // parents) into the process environment, if one exists. Ignored if
+    // absent, since in production the variables are typically set directly.
+    dotenvy::dotenv().ok();
+
     let jwt_secret = match auth::jwt_secret_from_env() {
         Ok(secret) => secret,
         Err(err) => {

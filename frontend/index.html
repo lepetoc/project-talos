@@ -19,12 +19,34 @@ function app() {
         zones: [],
         zonesError: '',
         newZone: { id: '', kind: 'Delay' },
+        state: null,
+        stateError: '',
+        ws: null,
 
         init() {
             if (this.token) {
                 this.checkHealth();
                 this.refreshZones();
+                this.connectWs();
             }
+        },
+
+        connectWs() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const socket = new WebSocket(`${protocol}//${location.host}/ws`);
+            this.ws = socket;
+            socket.addEventListener('open', () => {
+                socket.send(this.token);
+            });
+            socket.addEventListener('message', (event) => {
+                const data = JSON.parse(event.data);
+                this.state = data.state;
+            });
+            socket.addEventListener('close', () => {
+                if (this.token) {
+                    setTimeout(() => this.connectWs(), 2000);
+                }
+            });
         },
 
         // Merges the Authorization header onto every authenticated request and
@@ -61,6 +83,7 @@ function app() {
                 this.loginForm = { username: '', password: '' };
                 this.checkHealth();
                 this.refreshZones();
+                this.connectWs();
             } catch (err) {
                 this.loginError = `Login failed: ${err}`;
             }
@@ -144,11 +167,40 @@ function app() {
             }
         },
 
+        async arm() {
+            this.stateError = '';
+            try {
+                const res = await this.apiFetch('/arm', { method: 'POST' });
+                if (!res.ok) {
+                    this.stateError = `Failed to arm (HTTP ${res.status})`;
+                }
+            } catch (err) {
+                // apiFetch already logged out on 401; nothing further to do here.
+            }
+        },
+
+        async disarm() {
+            this.stateError = '';
+            try {
+                const res = await this.apiFetch('/disarm', { method: 'POST' });
+                if (!res.ok) {
+                    this.stateError = `Failed to disarm (HTTP ${res.status})`;
+                }
+            } catch (err) {
+                // apiFetch already logged out on 401; nothing further to do here.
+            }
+        },
+
         logout() {
             localStorage.removeItem('talos_token');
             this.token = null;
             this.view = 'login';
             this.zones = [];
+            this.state = null;
+            if (this.ws) {
+                this.ws.close();
+                this.ws = null;
+            }
         },
     };
 }
@@ -221,6 +273,12 @@ function app() {
                 <button @click="checkHealth()">Check health</button>
             </p>
             <button @click="logout()">Log out</button>
+
+            <h2>Alarm</h2>
+            <p>State: <span x-text="state === null ? 'connecting...' : state"></span></p>
+            <button @click="arm()" :disabled="state !== 'Disarmed'">Arm</button>
+            <button @click="disarm()">Disarm</button>
+            <p class="error" x-show="stateError" x-text="stateError"></p>
 
             <h2>Zones</h2>
             <button @click="refreshZones()">Refresh</button>

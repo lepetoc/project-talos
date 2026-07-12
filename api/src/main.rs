@@ -36,7 +36,7 @@ async fn main() {
         }
     };
 
-    let pool = match db::init_pool("sqlite://talos.db").await {
+    let pool = match db::init_pool(&db::database_url_from_env()).await {
         Ok(pool) => pool,
         Err(err) => {
             eprintln!("failed to initialize database: {err}");

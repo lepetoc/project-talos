@@ -27,6 +27,14 @@ impl From<sqlx::Error> for InsertUserError {
     }
 }
 
+const DEFAULT_DATABASE_URL: &str = "sqlite://talos.db";
+
+/// Reads the database URL from `TALOS_DATABASE_URL`, the same way the delay
+/// durations are read in `timers.rs`: optional, falling back to a default.
+pub fn database_url_from_env() -> String {
+    std::env::var("TALOS_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
+}
+
 pub async fn init_pool(database_url: &str) -> sqlx::Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
     let pool = SqlitePoolOptions::new()

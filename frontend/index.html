@@ -16,11 +16,31 @@ function app() {
         registerError: '',
         registerMessage: '',
         health: 'unknown',
+        zones: [],
+        zonesError: '',
+        newZone: { id: '', kind: 'Delay' },
 
         init() {
             if (this.token) {
                 this.checkHealth();
+                this.refreshZones();
             }
+        },
+
+        // Merges the Authorization header onto every authenticated request and
+        // forces a logout when the token has expired or been revoked, so
+        // callers don't each need to special-case a 401.
+        async apiFetch(path, options = {}) {
+            const headers = { ...(options.headers || {}) };
+            if (this.token) {
+                headers['Authorization'] = `Bearer ${this.token}`;
+            }
+            const res = await fetch(path, { ...options, headers });
+            if (res.status === 401) {
+                this.logout();
+                throw new Error('unauthorized');
+            }
+            return res;
         },
 
         async login() {
@@ -40,6 +60,7 @@ function app() {
                 this.token = data.token;
                 this.loginForm = { username: '', password: '' };
                 this.checkHealth();
+                this.refreshZones();
             } catch (err) {
                 this.loginError = `Login failed: ${err}`;
             }
@@ -49,14 +70,9 @@ function app() {
             this.registerError = '';
             this.registerMessage = '';
             try {
-                const headers = { 'Content-Type': 'application/json' };
-                const existingToken = localStorage.getItem('talos_token');
-                if (existingToken) {
-                    headers['Authorization'] = `Bearer ${existingToken}`;
-                }
-                const res = await fetch('/auth/register', {
+                const res = await this.apiFetch('/auth/register', {
                     method: 'POST',
-                    headers,
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this.registerForm),
                 });
                 if (!res.ok) {
@@ -81,20 +97,75 @@ function app() {
             }
         },
 
+        async refreshZones() {
+            this.zonesError = '';
+            try {
+                const res = await this.apiFetch('/zones');
+                if (!res.ok) {
+                    this.zonesError = `Failed to load zones (HTTP ${res.status})`;
+                    return;
+                }
+                this.zones = await res.json();
+            } catch (err) {
+                // apiFetch already logged out on 401; nothing further to do here.
+            }
+        },
+
+        async createZone() {
+            this.zonesError = '';
+            try {
+                const res = await this.apiFetch('/zones', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: Number(this.newZone.id), kind: this.newZone.kind }),
+                });
+                if (!res.ok) {
+                    this.zonesError = `Failed to create zone (HTTP ${res.status})`;
+                    return;
+                }
+                this.newZone = { id: '', kind: 'Delay' };
+                await this.refreshZones();
+            } catch (err) {
+                // apiFetch already logged out on 401; nothing further to do here.
+            }
+        },
+
+        async deleteZone(id) {
+            this.zonesError = '';
+            try {
+                const res = await this.apiFetch(`/zones/${id}`, { method: 'DELETE' });
+                if (!res.ok) {
+                    this.zonesError = `Failed to delete zone ${id} (HTTP ${res.status})`;
+                    return;
+                }
+                await this.refreshZones();
+            } catch (err) {
+                // apiFetch already logged out on 401; nothing further to do here.
+            }
+        },
+
         logout() {
             localStorage.removeItem('talos_token');
             this.token = null;
             this.view = 'login';
+            this.zones = [];
         },
     };
 }
 </script>
 <style>
-    body { font-family: system-ui, sans-serif; max-width: 24rem; margin: 3rem auto; padding: 0 1rem; }
+    body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 3rem auto; padding: 0 1rem; }
     label { display: block; margin-bottom: 0.75rem; }
-    input { display: block; width: 100%; box-sizing: border-box; padding: 0.4rem; margin-top: 0.2rem; }
+    input, select { display: block; width: 100%; box-sizing: border-box; padding: 0.4rem; margin-top: 0.2rem; }
     button { padding: 0.4rem 0.8rem; }
     .error { color: #b00020; }
+    ul.zones { list-style: none; padding: 0; }
+    ul.zones li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #ddd; }
+    ul.zones li .status { font-weight: 600; }
+    ul.zones li .status.error { color: #b00020; }
+    ul.zones li .id { color: #666; }
+    .zone-form { display: flex; align-items: flex-end; gap: 0.75rem; margin-top: 1rem; }
+    .zone-form label { flex: 1; margin-bottom: 0; }
 </style>
 </head>
 <body x-data="app()" x-init="init()">
@@ -150,6 +221,37 @@ function app() {
                 <button @click="checkHealth()">Check health</button>
             </p>
             <button @click="logout()">Log out</button>
+
+            <h2>Zones</h2>
+            <button @click="refreshZones()">Refresh</button>
+            <p class="error" x-show="zonesError" x-text="zonesError"></p>
+
+            <ul class="zones">
+                <template x-for="zone in zones" :key="zone.id">
+                    <li>
+                        <span class="id" x-text="`#${zone.id}`"></span>
+                        <span x-text="zone.kind"></span>
+                        <span class="status" :class="{ error: zone.status === 'Triggered' }" x-text="zone.status"></span>
+                        <button @click="deleteZone(zone.id)">Delete</button>
+                    </li>
+                </template>
+            </ul>
+            <p x-show="zones.length === 0">No zones yet.</p>
+
+            <form class="zone-form" @submit.prevent="createZone()">
+                <label>
+                    ID
+                    <input type="number" x-model="newZone.id" required min="0" step="1">
+                </label>
+                <label>
+                    Kind
+                    <select x-model="newZone.kind">
+                        <option value="Delay">Delay</option>
+                        <option value="Instant">Instant</option>
+                    </select>
+                </label>
+                <button type="submit">Add zone</button>
+            </form>
         </div>
     </template>
 </body>

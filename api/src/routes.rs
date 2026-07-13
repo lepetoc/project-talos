@@ -8,7 +8,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::auth::{self, AuthUser};
 use crate::db;
@@ -110,16 +110,20 @@ async fn register(
     auth: Option<AuthUser>,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let user_count = db::count_users(&state.pool)
-        .await
-        .map_err(|_| ApiError::Internal)?;
+    let user_count = db::count_users(&state.pool).await.map_err(|err| {
+        error!(%err, "failed to count users");
+        ApiError::Internal
+    })?;
 
     let is_bootstrap = user_count == 0;
     if !is_bootstrap && auth.is_none() {
         return Err(ApiError::Unauthorized("authentication required"));
     }
 
-    let password_hash = auth::hash_password(&payload.password).map_err(|_| ApiError::Internal)?;
+    let password_hash = auth::hash_password(&payload.password).map_err(|err| {
+        error!(%err, "failed to hash password");
+        ApiError::Internal
+    })?;
 
     match db::insert_user(&state.pool, &payload.username, &password_hash).await {
         Ok(_) => {
@@ -134,7 +138,10 @@ async fn register(
             Ok(StatusCode::CREATED)
         }
         Err(db::InsertUserError::UsernameTaken) => Err(ApiError::Conflict),
-        Err(db::InsertUserError::Other(_)) => Err(ApiError::Internal),
+        Err(db::InsertUserError::Other(err)) => {
+            error!(%err, "failed to insert user");
+            Err(ApiError::Internal)
+        }
     }
 }
 
@@ -144,7 +151,10 @@ async fn login(
 ) -> Result<Json<TokenResponse>, ApiError> {
     let user = db::find_user_by_username(&state.pool, &payload.username)
         .await
-        .map_err(|_| ApiError::Internal)?;
+        .map_err(|err| {
+            error!(%err, "failed to look up user by username");
+            ApiError::Internal
+        })?;
     let user = match user {
         Some(user) => user,
         None => {
@@ -153,14 +163,19 @@ async fn login(
         }
     };
 
-    let valid = auth::verify_password(&payload.password, &user.password_hash)
-        .map_err(|_| ApiError::Internal)?;
+    let valid = auth::verify_password(&payload.password, &user.password_hash).map_err(|err| {
+        error!(%err, "failed to verify password");
+        ApiError::Internal
+    })?;
     if !valid {
         warn!(username = %payload.username, "login failed: wrong password");
         return Err(ApiError::Unauthorized(INVALID_CREDENTIALS));
     }
 
-    let token = auth::create_token(user.id, &state.jwt_secret).map_err(|_| ApiError::Internal)?;
+    let token = auth::create_token(user.id, &state.jwt_secret).map_err(|err| {
+        error!(%err, "failed to create token");
+        ApiError::Internal
+    })?;
     info!(username = %payload.username, "login succeeded");
     Ok(Json(TokenResponse { token }))
 }
@@ -180,16 +195,15 @@ async fn create_zone(
         }
     }
 
-    if db::insert_zone(&state.pool, payload.id as i64, kind)
-        .await
-        .is_err()
-    {
-        state
-            .alarm
-            .lock()
-            .unwrap()
-            .remove_zone(payload.id)
-            .expect("a zone just added is always Clear and removable");
+    if let Err(err) = db::insert_zone(&state.pool, payload.id as i64, kind).await {
+        error!(zone_id = payload.id, %err, "failed to persist new zone; rolling back in-memory add");
+        if let Err(rollback_err) = state.alarm.lock().unwrap().remove_zone(payload.id) {
+            error!(
+                zone_id = payload.id,
+                %rollback_err,
+                "failed to roll back in-memory zone add after database insert failure; in-memory and database state are now desynchronized"
+            );
+        }
         return Err(ApiError::Internal);
     }
 
@@ -229,16 +243,27 @@ async fn delete_zone(
             Err(talos_core::RemoveZoneError::ZoneTriggered(_)) => return Err(ApiError::Conflict),
         }
 
-        kind.expect("zone existed a moment ago since remove_zone just succeeded")
+        match kind {
+            Some(kind) => kind,
+            None => {
+                error!(
+                    zone_id = id,
+                    "zone kind missing immediately after a successful remove_zone; in-memory state is desynchronized"
+                );
+                return Err(ApiError::Internal);
+            }
+        }
     };
 
-    if db::delete_zone(&state.pool, id as i64).await.is_err() {
-        state
-            .alarm
-            .lock()
-            .unwrap()
-            .add_zone(id, kind)
-            .expect("zone should not already exist right after its own removal");
+    if let Err(err) = db::delete_zone(&state.pool, id as i64).await {
+        error!(zone_id = id, %err, "failed to persist zone deletion; rolling back in-memory removal");
+        if let Err(rollback_err) = state.alarm.lock().unwrap().add_zone(id, kind) {
+            error!(
+                zone_id = id,
+                %rollback_err,
+                "failed to roll back in-memory zone removal after database delete failure; in-memory and database state are now desynchronized"
+            );
+        }
         return Err(ApiError::Internal);
     }
 

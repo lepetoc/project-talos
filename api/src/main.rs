@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use axum::{routing::get, Router};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
+use tracing::{error, info};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -52,7 +53,7 @@ async fn main() {
     let jwt_secret = match auth::jwt_secret_from_env() {
         Ok(secret) => secret,
         Err(err) => {
-            eprintln!("{err}");
+            error!("{err}");
             std::process::exit(1);
         }
     };
@@ -60,14 +61,14 @@ async fn main() {
     let pool = match db::init_pool(&db::database_url_from_env()).await {
         Ok(pool) => pool,
         Err(err) => {
-            eprintln!("failed to initialize database: {err}");
+            error!("failed to initialize database: {err}");
             std::process::exit(1);
         }
     };
 
     let mut alarm = talos_core::Alarm::new();
     if let Err(err) = db::replay_zones(&pool, &mut alarm).await {
-        eprintln!("failed to replay zones: {err}");
+        error!("failed to replay zones: {err}");
         std::process::exit(1);
     }
     let alarm = Arc::new(Mutex::new(alarm));
@@ -98,6 +99,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();
+    info!(addr = %listener.local_addr().unwrap(), "listening");
     axum::serve(
         listener,
         app(AppState {

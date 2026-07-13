@@ -14,8 +14,7 @@ pub struct User {
 #[derive(Debug)]
 pub enum InsertUserError {
     UsernameTaken,
-    // Kept for Debug output; callers currently only distinguish UsernameTaken from everything else.
-    Other(#[allow(dead_code)] sqlx::Error),
+    Other(sqlx::Error),
 }
 
 impl From<sqlx::Error> for InsertUserError {

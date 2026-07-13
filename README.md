@@ -1,5 +1,8 @@
 # Talos
 
+![CI](https://github.com/lepetoc/project-talos/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
+
 A self-hosted alarm system — state machine, REST/WebSocket API, and a minimal
 web interface — built as a personal project, currently running a real
 deployment for a coworking space.

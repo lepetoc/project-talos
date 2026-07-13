@@ -36,6 +36,14 @@ async fn health() -> &'static str {
     "ok"
 }
 
+const DEFAULT_BIND_ADDR: &str = "127.0.0.1:3000";
+
+/// Reads the bind address from `TALOS_BIND_ADDR`, the same way the database
+/// URL is read in `db.rs`: optional, falling back to a default.
+fn bind_addr_from_env() -> String {
+    std::env::var("TALOS_BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_string())
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -96,7 +104,7 @@ async fn main() {
         });
     }
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listener = tokio::net::TcpListener::bind(bind_addr_from_env())
         .await
         .unwrap();
     info!(addr = %listener.local_addr().unwrap(), "listening");

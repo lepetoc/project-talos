@@ -1,0 +1,12 @@
+[package]
+name = "modules"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+talos_core = { path = "../core", package = "core" }
+
+[features]
+default = []
+sia_dc09 = []
+shelly = []

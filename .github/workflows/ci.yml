@@ -32,10 +32,13 @@ jobs:
   test:
     name: cargo test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["--no-default-features", "--all-features"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace
+      - run: cargo test --workspace ${{ matrix.features }}
 
   doc:
     name: cargo doc

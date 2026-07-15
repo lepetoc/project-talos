@@ -10,7 +10,7 @@ tracing = { version = "0.1.41", optional = true }
 tokio = { version = "1.52.3", default-features = false, features = ["sync"] }
 
 [features]
-default = []
+default = ["sia_dc09", "shelly"]
 sia_dc09 = ["dep:sia-rs", "dep:tracing"]
 shelly = []
 

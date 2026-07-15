@@ -20,7 +20,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [features]
-default = []
+default = ["sia_dc09", "shelly"]
 sia_dc09 = ["modules/sia_dc09"]
 shelly = ["modules/shelly"]
 

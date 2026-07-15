@@ -42,6 +42,7 @@ pub fn check(
     entry_delay: Duration,
     now: Instant,
     tx: &tokio::sync::broadcast::Sender<talos_core::State>,
+    actioneurs: &Mutex<Vec<Box<dyn modules::Actionneur + Send>>>,
 ) {
     let mut alarm = alarm.lock().unwrap();
     let state = alarm.state();
@@ -59,8 +60,10 @@ pub fn check(
         talos_core::State::ExitDelay if now.duration_since(observed_at) >= exit_delay => {
             if alarm.complete_exit_delay() == Ok(true) {
                 let new_state = alarm.state();
+                let zones = alarm.list_zones();
                 let _ = tx.send(new_state);
                 log_state_transition(new_state);
+                notify_actioneurs(actioneurs, new_state, &zones);
             }
         }
         talos_core::State::EntryDelay
@@ -68,10 +71,23 @@ pub fn check(
                 && alarm.complete_entry_delay().is_ok() =>
         {
             let new_state = alarm.state();
+            let zones = alarm.list_zones();
             let _ = tx.send(new_state);
             log_state_transition(new_state);
+            notify_actioneurs(actioneurs, new_state, &zones);
         }
         _ => {}
+    }
+}
+
+fn notify_actioneurs(
+    actioneurs: &Mutex<Vec<Box<dyn modules::Actionneur + Send>>>,
+    state: talos_core::State,
+    zones: &[(u32, talos_core::ZoneKind, talos_core::ZoneStatus)],
+) {
+    let mut actioneurs = actioneurs.lock().unwrap();
+    for actioneur in actioneurs.iter_mut() {
+        actioneur.on_state_change(state, zones);
     }
 }
 
@@ -96,15 +112,28 @@ mod tests {
         tokio::sync::broadcast::channel(16)
     }
 
+    fn no_actioneurs() -> Mutex<Vec<Box<dyn modules::Actionneur + Send>>> {
+        Mutex::new(Vec::new())
+    }
+
     #[test]
     fn first_observation_takes_no_action_even_if_now_is_far_past() {
         let alarm = Mutex::new(talos_core::Alarm::new());
         alarm.lock().unwrap().arm().unwrap();
         let mut tracker = StateTracker::new();
         let (tx, _rx) = channel();
+        let actioneurs = no_actioneurs();
 
         let far_future = Instant::now() + Duration::from_secs(10_000);
-        check(&alarm, &mut tracker, DELAY, DELAY, far_future, &tx);
+        check(
+            &alarm,
+            &mut tracker,
+            DELAY,
+            DELAY,
+            far_future,
+            &tx,
+            &actioneurs,
+        );
 
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::ExitDelay);
     }
@@ -116,11 +145,20 @@ mod tests {
         let mut tracker = StateTracker::new();
         let start = Instant::now();
         let (tx, _rx) = channel();
+        let actioneurs = no_actioneurs();
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx);
+        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx, &actioneurs);
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::ExitDelay);
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start + DELAY, &tx);
+        check(
+            &alarm,
+            &mut tracker,
+            DELAY,
+            DELAY,
+            start + DELAY,
+            &tx,
+            &actioneurs,
+        );
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::Armed);
     }
 
@@ -138,9 +176,18 @@ mod tests {
         let mut tracker = StateTracker::new();
         let start = Instant::now();
         let (tx, _rx) = channel();
+        let actioneurs = no_actioneurs();
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx);
-        check(&alarm, &mut tracker, DELAY, DELAY, start + DELAY, &tx);
+        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx, &actioneurs);
+        check(
+            &alarm,
+            &mut tracker,
+            DELAY,
+            DELAY,
+            start + DELAY,
+            &tx,
+            &actioneurs,
+        );
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::ExitDelay);
 
         alarm
@@ -156,6 +203,7 @@ mod tests {
             DELAY,
             start + DELAY + Duration::from_secs(1),
             &tx,
+            &actioneurs,
         );
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::Armed);
     }
@@ -167,11 +215,20 @@ mod tests {
         let mut tracker = StateTracker::new();
         let start = Instant::now();
         let (tx, mut rx) = channel();
+        let actioneurs = no_actioneurs();
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx);
+        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx, &actioneurs);
         assert!(rx.try_recv().is_err());
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start + DELAY, &tx);
+        check(
+            &alarm,
+            &mut tracker,
+            DELAY,
+            DELAY,
+            start + DELAY,
+            &tx,
+            &actioneurs,
+        );
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::Armed);
         assert_eq!(rx.try_recv().unwrap(), talos_core::State::Armed);
     }
@@ -190,9 +247,18 @@ mod tests {
         let mut tracker = StateTracker::new();
         let start = Instant::now();
         let (tx, mut rx) = channel();
+        let actioneurs = no_actioneurs();
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx);
-        check(&alarm, &mut tracker, DELAY, DELAY, start + DELAY, &tx);
+        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx, &actioneurs);
+        check(
+            &alarm,
+            &mut tracker,
+            DELAY,
+            DELAY,
+            start + DELAY,
+            &tx,
+            &actioneurs,
+        );
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::ExitDelay);
         assert!(rx.try_recv().is_err());
     }
@@ -204,8 +270,9 @@ mod tests {
         let mut tracker = StateTracker::new();
         let start = Instant::now();
         let (tx, mut rx) = channel();
+        let actioneurs = no_actioneurs();
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx);
+        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx, &actioneurs);
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::ExitDelay);
         assert!(rx.try_recv().is_err());
     }
@@ -227,12 +294,21 @@ mod tests {
         let mut tracker = StateTracker::new();
         let start = Instant::now();
         let (tx, mut rx) = channel();
+        let actioneurs = no_actioneurs();
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx);
+        check(&alarm, &mut tracker, DELAY, DELAY, start, &tx, &actioneurs);
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::EntryDelay);
         assert!(rx.try_recv().is_err());
 
-        check(&alarm, &mut tracker, DELAY, DELAY, start + DELAY, &tx);
+        check(
+            &alarm,
+            &mut tracker,
+            DELAY,
+            DELAY,
+            start + DELAY,
+            &tx,
+            &actioneurs,
+        );
         assert_eq!(alarm.lock().unwrap().state(), talos_core::State::Triggered);
         assert_eq!(rx.try_recv().unwrap(), talos_core::State::Triggered);
     }

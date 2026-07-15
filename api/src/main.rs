@@ -16,6 +16,7 @@ pub struct AppState {
     pub jwt_secret: String,
     pub alarm: Arc<Mutex<talos_core::Alarm>>,
     pub tx: tokio::sync::broadcast::Sender<talos_core::State>,
+    pub actioneurs: Arc<Mutex<Vec<Box<dyn modules::Actionneur + Send>>>>,
 }
 
 /// The frontend lives at the repository root, alongside `core` and `api`, not
@@ -82,11 +83,30 @@ async fn main() {
     let alarm = Arc::new(Mutex::new(alarm));
     let (tx, _rx) = tokio::sync::broadcast::channel(16);
 
+    #[cfg_attr(not(any(feature = "sia_dc09", feature = "shelly")), allow(unused_mut))]
+    let mut actioneurs: Vec<Box<dyn modules::Actionneur + Send>> = Vec::new();
+    #[cfg(feature = "sia_dc09")]
+    {
+        match modules::sia_dc09::SiaDc09Module::from_env() {
+            Ok(module) => actioneurs.push(Box::new(module)),
+            Err(err) => {
+                error!("failed to initialize sia_dc09 module: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+    #[cfg(feature = "shelly")]
+    {
+        actioneurs.push(Box::new(modules::shelly::ShellyModule));
+    }
+    let actioneurs = Arc::new(Mutex::new(actioneurs));
+
     let exit_delay = timers::exit_delay_from_env();
     let entry_delay = timers::entry_delay_from_env();
     {
         let alarm = Arc::clone(&alarm);
         let tx = tx.clone();
+        let actioneurs = Arc::clone(&actioneurs);
         tokio::spawn(async move {
             let mut tracker = timers::StateTracker::new();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -99,6 +119,7 @@ async fn main() {
                     entry_delay,
                     std::time::Instant::now(),
                     &tx,
+                    &actioneurs,
                 );
             }
         });
@@ -115,6 +136,7 @@ async fn main() {
             jwt_secret,
             alarm,
             tx,
+            actioneurs,
         }),
     )
     .await
@@ -135,6 +157,7 @@ pub(crate) mod test_support {
             jwt_secret: "test-secret".to_string(),
             alarm: Arc::new(Mutex::new(talos_core::Alarm::new())),
             tx,
+            actioneurs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }

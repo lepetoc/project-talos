@@ -7,6 +7,7 @@ edition = "2021"
 argon2 = "0.5.3"
 axum = { version = "0.8.9", features = ["ws"] }
 talos_core = { path = "../core", package = "core" }
+modules = { path = "../modules" }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 password-hash = { version = "0.5", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -17,6 +18,11 @@ tower-http = { version = "0.7.0", features = ["fs", "trace"] }
 dotenvy = "0.15.7"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[features]
+default = []
+sia_dc09 = ["modules/sia_dc09"]
+shelly = ["modules/shelly"]
 
 [dev-dependencies]
 futures-util = "0.3.32"

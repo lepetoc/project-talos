@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 talos_core = { path = "../core", package = "core" }
+sia-rs = { git = "https://github.com/lepetoc/sia-rs", optional = true }
+tracing = { version = "0.1.41", optional = true }
 
 [features]
 default = []
-sia_dc09 = []
+sia_dc09 = ["dep:sia-rs", "dep:tracing"]
 shelly = []

@@ -277,8 +277,10 @@ async fn arm(
     let mut alarm = state.alarm.lock().unwrap();
     alarm.arm().map_err(|_| ApiError::Conflict)?;
     let new_state = alarm.state();
+    let zones = alarm.list_zones();
     let _ = state.tx.send(new_state);
     log_state_transition(new_state);
+    notify_actioneurs(&state, new_state, &zones);
     Ok(Json(StateResponse {
         state: state_to_str(new_state).to_string(),
     }))
@@ -288,11 +290,24 @@ async fn disarm(State(state): State<AppState>, _auth: AuthUser) -> Json<StateRes
     let mut alarm = state.alarm.lock().unwrap();
     alarm.disarm();
     let new_state = alarm.state();
+    let zones = alarm.list_zones();
     let _ = state.tx.send(new_state);
     log_state_transition(new_state);
+    notify_actioneurs(&state, new_state, &zones);
     Json(StateResponse {
         state: state_to_str(new_state).to_string(),
     })
+}
+
+fn notify_actioneurs(
+    state: &AppState,
+    new_state: talos_core::State,
+    zones: &[(u32, talos_core::ZoneKind, talos_core::ZoneStatus)],
+) {
+    let mut actioneurs = state.actioneurs.lock().unwrap();
+    for actioneur in actioneurs.iter_mut() {
+        actioneur.on_state_change(new_state, zones);
+    }
 }
 
 fn log_state_transition(new_state: talos_core::State) {

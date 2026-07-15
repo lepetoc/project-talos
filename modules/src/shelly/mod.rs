@@ -3,7 +3,12 @@ use crate::Actionneur;
 pub struct ShellyModule;
 
 impl Actionneur for ShellyModule {
-    fn on_state_change(&mut self, _state: talos_core::State) {}
+    fn on_state_change(
+        &mut self,
+        _state: talos_core::State,
+        _zones: &[(u32, talos_core::ZoneKind, talos_core::ZoneStatus)],
+    ) {
+    }
 }
 
 #[cfg(test)]
@@ -13,6 +18,6 @@ mod tests {
     #[test]
     fn on_state_change_compiles_and_runs() {
         let mut module = ShellyModule;
-        module.on_state_change(talos_core::State::Armed);
+        module.on_state_change(talos_core::State::Armed, &[]);
     }
 }

@@ -10,7 +10,11 @@ pub enum Reading {
 }
 
 pub trait Actionneur {
-    fn on_state_change(&mut self, state: talos_core::State);
+    fn on_state_change(
+        &mut self,
+        state: talos_core::State,
+        zones: &[(u32, talos_core::ZoneKind, talos_core::ZoneStatus)],
+    );
 }
 
 #[cfg(test)]

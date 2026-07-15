@@ -138,6 +138,40 @@ pub async fn replay_zones(pool: &SqlitePool, alarm: &mut talos_core::Alarm) -> s
     Ok(())
 }
 
+pub async fn get_shelly_gateway_addr(pool: &SqlitePool) -> sqlx::Result<Option<String>> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT gateway_addr FROM shelly_config WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(addr,)| addr))
+}
+
+pub async fn set_shelly_gateway_addr(pool: &SqlitePool, addr: &str) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO shelly_config (id, gateway_addr) VALUES (1, ?) \
+         ON CONFLICT(id) DO UPDATE SET gateway_addr = excluded.gateway_addr",
+    )
+    .bind(addr)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Only called from `main.rs` under the `shelly` feature so far; exercised
+/// directly by tests otherwise.
+#[cfg_attr(not(feature = "shelly"), allow(dead_code))]
+pub async fn load_sensor_mappings(
+    pool: &SqlitePool,
+) -> sqlx::Result<std::collections::HashMap<String, u32>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as("SELECT sensor_id, zone_id FROM sensor_mappings")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(sensor_id, zone_id)| (sensor_id, zone_id as u32))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +217,54 @@ mod tests {
                 (2, talos_core::ZoneKind::Instant)
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn shelly_gateway_addr_starts_null_then_round_trips() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        assert_eq!(get_shelly_gateway_addr(&pool).await.unwrap(), None);
+
+        set_shelly_gateway_addr(&pool, "192.168.1.50:1010")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            get_shelly_gateway_addr(&pool).await.unwrap(),
+            Some("192.168.1.50:1010".to_string())
+        );
+
+        set_shelly_gateway_addr(&pool, "192.168.1.51:1010")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            get_shelly_gateway_addr(&pool).await.unwrap(),
+            Some("192.168.1.51:1010".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn load_sensor_mappings_returns_seeded_rows() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        sqlx::query("INSERT INTO sensor_mappings (sensor_id, zone_id) VALUES (?, ?)")
+            .bind("front-door")
+            .bind(1i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sensor_mappings (sensor_id, zone_id) VALUES (?, ?)")
+            .bind("back-door")
+            .bind(2i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mappings = load_sensor_mappings(&pool).await.unwrap();
+
+        assert_eq!(mappings.get("front-door"), Some(&1));
+        assert_eq!(mappings.get("back-door"), Some(&2));
     }
 
     #[tokio::test]

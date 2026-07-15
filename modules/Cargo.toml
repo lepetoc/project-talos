@@ -7,8 +7,12 @@ edition = "2021"
 talos_core = { path = "../core", package = "core" }
 sia-rs = { git = "https://github.com/lepetoc/sia-rs", optional = true }
 tracing = { version = "0.1.41", optional = true }
+tokio = { version = "1.52.3", default-features = false, features = ["sync"] }
 
 [features]
 default = []
 sia_dc09 = ["dep:sia-rs", "dep:tracing"]
 shelly = []
+
+[dev-dependencies]
+tokio = { version = "1.52.3", default-features = false, features = ["sync", "macros", "rt"] }

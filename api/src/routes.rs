@@ -53,6 +53,16 @@ pub struct StateResponse {
     state: String,
 }
 
+#[derive(Serialize)]
+pub struct ShellyConfigResponse {
+    gateway_addr: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ShellyConfigRequest {
+    gateway_addr: String,
+}
+
 fn state_to_str(state: talos_core::State) -> &'static str {
     match state {
         talos_core::State::Disarmed => "Disarmed",
@@ -97,6 +107,10 @@ pub fn router() -> Router<AppState> {
         .route("/disarm", post(disarm))
         .route("/state", get(get_state))
         .route("/ws", get(ws_handler))
+        .route(
+            "/modules/shelly/config",
+            get(get_shelly_config).put(put_shelly_config),
+        )
 }
 
 /// Creates a user account.
@@ -325,6 +339,33 @@ async fn get_state(State(state): State<AppState>, _auth: AuthUser) -> Json<State
     })
 }
 
+async fn get_shelly_config(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+) -> Result<Json<ShellyConfigResponse>, ApiError> {
+    let gateway_addr = db::get_shelly_gateway_addr(&state.pool)
+        .await
+        .map_err(|err| {
+            error!(%err, "failed to load shelly gateway address");
+            ApiError::Internal
+        })?;
+    Ok(Json(ShellyConfigResponse { gateway_addr }))
+}
+
+async fn put_shelly_config(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Json(payload): Json<ShellyConfigRequest>,
+) -> Result<StatusCode, ApiError> {
+    db::set_shelly_gateway_addr(&state.pool, &payload.gateway_addr)
+        .await
+        .map_err(|err| {
+            error!(%err, "failed to persist shelly gateway address");
+            ApiError::Internal
+        })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Upgrades to a WebSocket connection. Unlike the other routes, this one has
 /// no `AuthUser` extractor: browsers cannot set an `Authorization` header
 /// when opening a WebSocket, so authentication instead happens over the
@@ -383,6 +424,17 @@ mod tests {
     fn json_request(uri: &str, body: serde_json::Value, token: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
             .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    fn put_json_request(uri: &str, body: serde_json::Value, token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("PUT")
             .uri(uri)
             .header("content-type", "application/json");
         if let Some(token) = token {
@@ -1023,6 +1075,59 @@ mod tests {
 
         let disarm_response = router.oneshot(post_request("/disarm", None)).await.unwrap();
         assert_eq!(disarm_response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn shelly_config_round_trips_and_requires_token() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let get_unauthorized = router
+            .clone()
+            .oneshot(get_request("/modules/shelly/config", None))
+            .await
+            .unwrap();
+        assert_eq!(get_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let put_unauthorized = router
+            .clone()
+            .oneshot(put_json_request(
+                "/modules/shelly/config",
+                json!({ "gateway_addr": "192.168.1.50:1010" }),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let initial = router
+            .clone()
+            .oneshot(get_request("/modules/shelly/config", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(initial.status(), StatusCode::OK);
+        assert_eq!(body_json(initial).await, json!({ "gateway_addr": null }));
+
+        let put_response = router
+            .clone()
+            .oneshot(put_json_request(
+                "/modules/shelly/config",
+                json!({ "gateway_addr": "192.168.1.50:1010" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_response.status(), StatusCode::NO_CONTENT);
+
+        let after = router
+            .oneshot(get_request("/modules/shelly/config", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(after.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(after).await,
+            json!({ "gateway_addr": "192.168.1.50:1010" })
+        );
     }
 
     // `oneshot` cannot drive a WebSocket upgrade, so these tests bind the real

@@ -101,6 +101,26 @@ async fn main() {
     }
     let actioneurs = Arc::new(Mutex::new(actioneurs));
 
+    #[cfg(feature = "shelly")]
+    {
+        let sensor_to_zone = match db::load_sensor_mappings(&pool).await {
+            Ok(map) => map,
+            Err(err) => {
+                error!("failed to load sensor mappings: {err}");
+                std::process::exit(1);
+            }
+        };
+        // Constructed at startup so the sensor-to-zone map is loaded once;
+        // not yet wired to an HTTP endpoint that would call `report` — that
+        // arrives with the actual Shelly webhook handler.
+        let _alarm_handle = modules::AlarmHandle::new(
+            Arc::clone(&alarm),
+            tx.clone(),
+            Arc::clone(&actioneurs),
+            sensor_to_zone,
+        );
+    }
+
     let exit_delay = timers::exit_delay_from_env();
     let entry_delay = timers::entry_delay_from_env();
     {

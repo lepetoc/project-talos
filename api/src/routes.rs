@@ -53,11 +53,13 @@ pub struct StateResponse {
     state: String,
 }
 
+#[cfg(feature = "shelly")]
 #[derive(Serialize)]
 pub struct ShellyConfigResponse {
     gateway_addr: Option<String>,
 }
 
+#[cfg(feature = "shelly")]
 #[derive(Deserialize)]
 pub struct ShellyConfigRequest {
     gateway_addr: String,
@@ -98,7 +100,7 @@ impl IntoResponse for ApiError {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/zones", post(create_zone).get(list_zones))
@@ -106,11 +108,15 @@ pub fn router() -> Router<AppState> {
         .route("/arm", post(arm))
         .route("/disarm", post(disarm))
         .route("/state", get(get_state))
-        .route("/ws", get(ws_handler))
-        .route(
-            "/modules/shelly/config",
-            get(get_shelly_config).put(put_shelly_config),
-        )
+        .route("/ws", get(ws_handler));
+
+    #[cfg(feature = "shelly")]
+    let router = router.route(
+        "/modules/shelly/config",
+        get(get_shelly_config).put(put_shelly_config),
+    );
+
+    router
 }
 
 /// Creates a user account.
@@ -339,6 +345,7 @@ async fn get_state(State(state): State<AppState>, _auth: AuthUser) -> Json<State
     })
 }
 
+#[cfg(feature = "shelly")]
 async fn get_shelly_config(
     State(state): State<AppState>,
     _auth: AuthUser,
@@ -352,6 +359,7 @@ async fn get_shelly_config(
     Ok(Json(ShellyConfigResponse { gateway_addr }))
 }
 
+#[cfg(feature = "shelly")]
 async fn put_shelly_config(
     State(state): State<AppState>,
     _auth: AuthUser,
@@ -432,6 +440,7 @@ mod tests {
         builder.body(Body::from(body.to_string())).unwrap()
     }
 
+    #[cfg(feature = "shelly")]
     fn put_json_request(uri: &str, body: serde_json::Value, token: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
             .method("PUT")
@@ -1077,6 +1086,7 @@ mod tests {
         assert_eq!(disarm_response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[cfg(feature = "shelly")]
     #[tokio::test]
     async fn shelly_config_round_trips_and_requires_token() {
         let router = app(test_support::state().await);
@@ -1128,6 +1138,18 @@ mod tests {
             body_json(after).await,
             json!({ "gateway_addr": "192.168.1.50:1010" })
         );
+    }
+
+    #[cfg(not(feature = "shelly"))]
+    #[tokio::test]
+    async fn shelly_config_route_absent_without_feature() {
+        let router = app(test_support::state().await);
+
+        let response = router
+            .oneshot(get_request("/modules/shelly/config", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     // `oneshot` cannot drive a WebSocket upgrade, so these tests bind the real

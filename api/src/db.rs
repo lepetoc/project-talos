@@ -138,6 +138,9 @@ pub async fn replay_zones(pool: &SqlitePool, alarm: &mut talos_core::Alarm) -> s
     Ok(())
 }
 
+/// Only called from `routes.rs` under the `shelly` feature so far; exercised
+/// directly by tests otherwise.
+#[cfg_attr(not(feature = "shelly"), allow(dead_code))]
 pub async fn get_shelly_gateway_addr(pool: &SqlitePool) -> sqlx::Result<Option<String>> {
     let row: Option<(Option<String>,)> =
         sqlx::query_as("SELECT gateway_addr FROM shelly_config WHERE id = 1")
@@ -146,6 +149,9 @@ pub async fn get_shelly_gateway_addr(pool: &SqlitePool) -> sqlx::Result<Option<S
     Ok(row.and_then(|(addr,)| addr))
 }
 
+/// Only called from `routes.rs` under the `shelly` feature so far; exercised
+/// directly by tests otherwise.
+#[cfg_attr(not(feature = "shelly"), allow(dead_code))]
 pub async fn set_shelly_gateway_addr(pool: &SqlitePool, addr: &str) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO shelly_config (id, gateway_addr) VALUES (1, ?) \

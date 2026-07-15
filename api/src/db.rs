@@ -163,6 +163,48 @@ pub async fn set_shelly_gateway_addr(pool: &SqlitePool, addr: &str) -> sqlx::Res
     Ok(())
 }
 
+/// Only called from `routes.rs` and `main.rs` under the `sia_dc09` feature so
+/// far; exercised directly by tests otherwise. An incomplete configuration
+/// (any of the three columns still null) is treated the same as no
+/// configuration at all.
+#[cfg_attr(not(feature = "sia_dc09"), allow(dead_code))]
+pub async fn get_sia_config(pool: &SqlitePool) -> sqlx::Result<Option<(String, String, String)>> {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT account, prefix, receiver_addr FROM sia_config WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(
+        |(account, prefix, receiver_addr)| match (account, prefix, receiver_addr) {
+            (Some(account), Some(prefix), Some(receiver_addr)) => {
+                Some((account, prefix, receiver_addr))
+            }
+            _ => None,
+        },
+    ))
+}
+
+/// Only called from `routes.rs` under the `sia_dc09` feature so far;
+/// exercised directly by tests otherwise.
+#[cfg_attr(not(feature = "sia_dc09"), allow(dead_code))]
+pub async fn set_sia_config(
+    pool: &SqlitePool,
+    account: &str,
+    prefix: &str,
+    receiver_addr: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO sia_config (id, account, prefix, receiver_addr) VALUES (1, ?, ?, ?) \
+         ON CONFLICT(id) DO UPDATE SET account = excluded.account, \
+         prefix = excluded.prefix, receiver_addr = excluded.receiver_addr",
+    )
+    .bind(account)
+    .bind(prefix)
+    .bind(receiver_addr)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Only called from `main.rs` under the `shelly` feature so far; exercised
 /// directly by tests otherwise.
 #[cfg_attr(not(feature = "shelly"), allow(dead_code))]
@@ -247,6 +289,35 @@ mod tests {
         assert_eq!(
             get_shelly_gateway_addr(&pool).await.unwrap(),
             Some("192.168.1.51:1010".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn sia_config_is_none_until_all_three_columns_are_set() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        assert_eq!(get_sia_config(&pool).await.unwrap(), None);
+
+        // Set only one of the three columns directly, leaving the other two
+        // null: still treated as unconfigured.
+        sqlx::query("UPDATE sia_config SET account = ? WHERE id = 1")
+            .bind("1234")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(get_sia_config(&pool).await.unwrap(), None);
+
+        set_sia_config(&pool, "1234", "0", "192.168.1.60:5555")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            get_sia_config(&pool).await.unwrap(),
+            Some((
+                "1234".to_string(),
+                "0".to_string(),
+                "192.168.1.60:5555".to_string()
+            ))
         );
     }
 

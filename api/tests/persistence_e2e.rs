@@ -30,10 +30,6 @@ impl TestServer {
             .env("TALOS_BIND_ADDR", addr)
             .env("TALOS_EXIT_DELAY_SECS", "2")
             .env("TALOS_ENTRY_DELAY_SECS", "2")
-            // Harmless unless the `sia_dc09` feature is compiled in, in which
-            // case the binary requires these to start.
-            .env("TALOS_SIA_ACCOUNT", "1234")
-            .env("TALOS_SIA_RECEIVER_ADDR", "127.0.0.1:0")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

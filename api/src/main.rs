@@ -87,10 +87,21 @@ async fn main() {
     let mut actioneurs: Vec<Box<dyn modules::Actionneur + Send>> = Vec::new();
     #[cfg(feature = "sia_dc09")]
     {
-        match modules::sia_dc09::SiaDc09Module::from_env() {
-            Ok(module) => actioneurs.push(Box::new(module)),
+        match db::get_sia_config(&pool).await {
+            Ok(Some((account, prefix, receiver_addr))) => {
+                match modules::sia_dc09::SiaDc09Module::new(&account, &prefix, &receiver_addr) {
+                    Ok(module) => actioneurs.push(Box::new(module)),
+                    Err(err) => {
+                        error!("failed to initialize sia_dc09 module: {err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Ok(None) => {
+                info!("SIA DC-09 is not yet configured; skipping module initialization");
+            }
             Err(err) => {
-                error!("failed to initialize sia_dc09 module: {err}");
+                error!("failed to load sia_dc09 config: {err}");
                 std::process::exit(1);
             }
         }

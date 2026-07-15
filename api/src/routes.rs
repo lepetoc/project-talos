@@ -65,6 +65,22 @@ pub struct ShellyConfigRequest {
     gateway_addr: String,
 }
 
+#[cfg(feature = "sia_dc09")]
+#[derive(Serialize)]
+pub struct SiaConfigResponse {
+    account: Option<String>,
+    prefix: Option<String>,
+    receiver_addr: Option<String>,
+}
+
+#[cfg(feature = "sia_dc09")]
+#[derive(Deserialize)]
+pub struct SiaConfigRequest {
+    account: String,
+    prefix: String,
+    receiver_addr: String,
+}
+
 fn state_to_str(state: talos_core::State) -> &'static str {
     match state {
         talos_core::State::Disarmed => "Disarmed",
@@ -114,6 +130,12 @@ pub fn router() -> Router<AppState> {
     let router = router.route(
         "/modules/shelly/config",
         get(get_shelly_config).put(put_shelly_config),
+    );
+
+    #[cfg(feature = "sia_dc09")]
+    let router = router.route(
+        "/modules/sia/config",
+        get(get_sia_config).put(put_sia_config),
     );
 
     router
@@ -374,6 +396,48 @@ async fn put_shelly_config(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[cfg(feature = "sia_dc09")]
+async fn get_sia_config(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+) -> Result<Json<SiaConfigResponse>, ApiError> {
+    let config = db::get_sia_config(&state.pool).await.map_err(|err| {
+        error!(%err, "failed to load sia config");
+        ApiError::Internal
+    })?;
+    let (account, prefix, receiver_addr) = match config {
+        Some((account, prefix, receiver_addr)) => {
+            (Some(account), Some(prefix), Some(receiver_addr))
+        }
+        None => (None, None, None),
+    };
+    Ok(Json(SiaConfigResponse {
+        account,
+        prefix,
+        receiver_addr,
+    }))
+}
+
+#[cfg(feature = "sia_dc09")]
+async fn put_sia_config(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Json(payload): Json<SiaConfigRequest>,
+) -> Result<StatusCode, ApiError> {
+    db::set_sia_config(
+        &state.pool,
+        &payload.account,
+        &payload.prefix,
+        &payload.receiver_addr,
+    )
+    .await
+    .map_err(|err| {
+        error!(%err, "failed to persist sia config");
+        ApiError::Internal
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Upgrades to a WebSocket connection. Unlike the other routes, this one has
 /// no `AuthUser` extractor: browsers cannot set an `Authorization` header
 /// when opening a WebSocket, so authentication instead happens over the
@@ -440,7 +504,7 @@ mod tests {
         builder.body(Body::from(body.to_string())).unwrap()
     }
 
-    #[cfg(feature = "shelly")]
+    #[cfg(any(feature = "shelly", feature = "sia_dc09"))]
     fn put_json_request(uri: &str, body: serde_json::Value, token: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
             .method("PUT")
@@ -1147,6 +1211,87 @@ mod tests {
 
         let response = router
             .oneshot(get_request("/modules/shelly/config", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "sia_dc09")]
+    #[tokio::test]
+    async fn sia_config_round_trips_and_requires_token() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let get_unauthorized = router
+            .clone()
+            .oneshot(get_request("/modules/sia/config", None))
+            .await
+            .unwrap();
+        assert_eq!(get_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let put_unauthorized = router
+            .clone()
+            .oneshot(put_json_request(
+                "/modules/sia/config",
+                json!({
+                    "account": "1234",
+                    "prefix": "0",
+                    "receiver_addr": "192.168.1.60:5555"
+                }),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let initial = router
+            .clone()
+            .oneshot(get_request("/modules/sia/config", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(initial.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(initial).await,
+            json!({ "account": null, "prefix": null, "receiver_addr": null })
+        );
+
+        let put_response = router
+            .clone()
+            .oneshot(put_json_request(
+                "/modules/sia/config",
+                json!({
+                    "account": "1234",
+                    "prefix": "0",
+                    "receiver_addr": "192.168.1.60:5555"
+                }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_response.status(), StatusCode::NO_CONTENT);
+
+        let after = router
+            .oneshot(get_request("/modules/sia/config", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(after.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(after).await,
+            json!({
+                "account": "1234",
+                "prefix": "0",
+                "receiver_addr": "192.168.1.60:5555"
+            })
+        );
+    }
+
+    #[cfg(not(feature = "sia_dc09"))]
+    #[tokio::test]
+    async fn sia_config_route_absent_without_feature() {
+        let router = app(test_support::state().await);
+
+        let response = router
+            .oneshot(get_request("/modules/sia/config", None))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);

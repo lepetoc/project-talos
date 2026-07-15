@@ -6,22 +6,15 @@ use tracing::{info, warn};
 
 use crate::Actionneur;
 
-const ACCOUNT_ENV: &str = "TALOS_SIA_ACCOUNT";
-const PREFIX_ENV: &str = "TALOS_SIA_PREFIX";
-const RECEIVER_ADDR_ENV: &str = "TALOS_SIA_RECEIVER_ADDR";
-const DEFAULT_PREFIX: &str = "0";
-
 #[derive(Debug)]
 pub enum ConfigError {
-    MissingEnv(&'static str),
     InvalidAccount(sia_rs::AccountError),
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConfigError::MissingEnv(key) => write!(f, "{key} must be set"),
-            ConfigError::InvalidAccount(err) => write!(f, "invalid {ACCOUNT_ENV}: {err}"),
+            ConfigError::InvalidAccount(err) => write!(f, "invalid SIA account: {err}"),
         }
     }
 }
@@ -34,19 +27,17 @@ pub struct SiaDc09Module {
 }
 
 impl SiaDc09Module {
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let account_number =
-            std::env::var(ACCOUNT_ENV).map_err(|_| ConfigError::MissingEnv(ACCOUNT_ENV))?;
-        let prefix = std::env::var(PREFIX_ENV).unwrap_or_else(|_| DEFAULT_PREFIX.to_string());
-        let receiver_addr = std::env::var(RECEIVER_ADDR_ENV)
-            .map_err(|_| ConfigError::MissingEnv(RECEIVER_ADDR_ENV))?;
-
-        let account = sia_rs::Account::new(&account_number, &prefix, None)
+    pub fn new(
+        account_number: &str,
+        prefix: &str,
+        receiver_addr: &str,
+    ) -> Result<Self, ConfigError> {
+        let account = sia_rs::Account::new(account_number, prefix, None)
             .map_err(ConfigError::InvalidAccount)?;
 
         Ok(SiaDc09Module {
             client: sia_rs::Client::new(account),
-            receiver_addr,
+            receiver_addr: receiver_addr.to_string(),
         })
     }
 }
@@ -115,15 +106,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
-        // SAFETY: this test runs single-threaded within this process (no other
-        // test in this crate reads or writes these variables), so there is no
-        // concurrent access to race against.
-        unsafe {
-            std::env::set_var(ACCOUNT_ENV, "1234");
-            std::env::remove_var(PREFIX_ENV);
-            std::env::set_var(RECEIVER_ADDR_ENV, addr.to_string());
-        }
-        let mut module = SiaDc09Module::from_env().unwrap();
+        let mut module = SiaDc09Module::new("1234", "0", &addr.to_string()).unwrap();
 
         let (done_tx, done_rx) = mpsc::channel();
         std::thread::spawn(move || {

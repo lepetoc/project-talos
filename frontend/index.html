@@ -1,316 +1,201 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Talos</title>
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
-<script>
-function app() {
-    return {
-        token: localStorage.getItem('talos_token'),
-        view: 'login',
-        loginForm: { username: '', password: '' },
-        registerForm: { username: '', password: '' },
-        loginError: '',
-        registerError: '',
-        registerMessage: '',
-        health: 'unknown',
-        zones: [],
-        zonesError: '',
-        newZone: { id: '', kind: 'Delay' },
-        state: null,
-        stateError: '',
-        ws: null,
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Talos</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="app.js" defer></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  </head>
+  <body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-100 min-h-screen py-12 px-4 sm:px-6 lg:px-8 flex flex-col items-center" x-data="app()" x-init="init()">
+    <div class="w-full max-w-md space-y-8">
+      <div class="text-center">
+        <h1 class="text-4xl font-extrabold tracking-tight text-indigo-600 dark:text-indigo-400">Talos</h1>
+        <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">Security Control Panel</p>
+      </div>
 
-        init() {
-            if (this.token) {
-                this.checkHealth();
-                this.refreshZones();
-                this.connectWs();
-            }
-        },
-
-        connectWs() {
-            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const socket = new WebSocket(`${protocol}//${location.host}/ws`);
-            this.ws = socket;
-            socket.addEventListener('open', () => {
-                socket.send(this.token);
-            });
-            socket.addEventListener('message', (event) => {
-                const data = JSON.parse(event.data);
-                this.state = data.state;
-            });
-            socket.addEventListener('close', () => {
-                if (this.token) {
-                    setTimeout(() => this.connectWs(), 2000);
-                }
-            });
-        },
-
-        // Merges the Authorization header onto every authenticated request and
-        // forces a logout when the token has expired or been revoked, so
-        // callers don't each need to special-case a 401.
-        async apiFetch(path, options = {}) {
-            const headers = { ...(options.headers || {}) };
-            if (this.token) {
-                headers['Authorization'] = `Bearer ${this.token}`;
-            }
-            const res = await fetch(path, { ...options, headers });
-            if (res.status === 401) {
-                this.logout();
-                throw new Error('unauthorized');
-            }
-            return res;
-        },
-
-        async login() {
-            this.loginError = '';
-            try {
-                const res = await fetch('/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.loginForm),
-                });
-                if (!res.ok) {
-                    this.loginError = `Login failed (HTTP ${res.status})`;
-                    return;
-                }
-                const data = await res.json();
-                localStorage.setItem('talos_token', data.token);
-                this.token = data.token;
-                this.loginForm = { username: '', password: '' };
-                this.checkHealth();
-                this.refreshZones();
-                this.connectWs();
-            } catch (err) {
-                this.loginError = `Login failed: ${err}`;
-            }
-        },
-
-        async register() {
-            this.registerError = '';
-            this.registerMessage = '';
-            try {
-                const res = await this.apiFetch('/auth/register', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.registerForm),
-                });
-                if (!res.ok) {
-                    this.registerError = `Registration failed (HTTP ${res.status})`;
-                    return;
-                }
-                this.registerMessage = 'Registered. You can now log in.';
-                this.registerForm = { username: '', password: '' };
-                this.view = 'login';
-            } catch (err) {
-                this.registerError = `Registration failed: ${err}`;
-            }
-        },
-
-        async checkHealth() {
-            this.health = 'checking...';
-            try {
-                const res = await fetch('/health');
-                this.health = res.ok ? 'reachable' : `unreachable (HTTP ${res.status})`;
-            } catch (err) {
-                this.health = 'unreachable';
-            }
-        },
-
-        async refreshZones() {
-            this.zonesError = '';
-            try {
-                const res = await this.apiFetch('/zones');
-                if (!res.ok) {
-                    this.zonesError = `Failed to load zones (HTTP ${res.status})`;
-                    return;
-                }
-                this.zones = await res.json();
-            } catch (err) {
-                // apiFetch already logged out on 401; nothing further to do here.
-            }
-        },
-
-        async createZone() {
-            this.zonesError = '';
-            try {
-                const res = await this.apiFetch('/zones', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: Number(this.newZone.id), kind: this.newZone.kind }),
-                });
-                if (!res.ok) {
-                    this.zonesError = `Failed to create zone (HTTP ${res.status})`;
-                    return;
-                }
-                this.newZone = { id: '', kind: 'Delay' };
-                await this.refreshZones();
-            } catch (err) {
-                // apiFetch already logged out on 401; nothing further to do here.
-            }
-        },
-
-        async deleteZone(id) {
-            this.zonesError = '';
-            try {
-                const res = await this.apiFetch(`/zones/${id}`, { method: 'DELETE' });
-                if (!res.ok) {
-                    this.zonesError = `Failed to delete zone ${id} (HTTP ${res.status})`;
-                    return;
-                }
-                await this.refreshZones();
-            } catch (err) {
-                // apiFetch already logged out on 401; nothing further to do here.
-            }
-        },
-
-        async arm() {
-            this.stateError = '';
-            try {
-                const res = await this.apiFetch('/arm', { method: 'POST' });
-                if (!res.ok) {
-                    this.stateError = `Failed to arm (HTTP ${res.status})`;
-                }
-            } catch (err) {
-                // apiFetch already logged out on 401; nothing further to do here.
-            }
-        },
-
-        async disarm() {
-            this.stateError = '';
-            try {
-                const res = await this.apiFetch('/disarm', { method: 'POST' });
-                if (!res.ok) {
-                    this.stateError = `Failed to disarm (HTTP ${res.status})`;
-                }
-            } catch (err) {
-                // apiFetch already logged out on 401; nothing further to do here.
-            }
-        },
-
-        logout() {
-            localStorage.removeItem('talos_token');
-            this.token = null;
-            this.view = 'login';
-            this.zones = [];
-            this.state = null;
-            if (this.ws) {
-                this.ws.close();
-                this.ws = null;
-            }
-        },
-    };
-}
-</script>
-<style>
-    body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 3rem auto; padding: 0 1rem; }
-    label { display: block; margin-bottom: 0.75rem; }
-    input, select { display: block; width: 100%; box-sizing: border-box; padding: 0.4rem; margin-top: 0.2rem; }
-    button { padding: 0.4rem 0.8rem; }
-    .error { color: #b00020; }
-    ul.zones { list-style: none; padding: 0; }
-    ul.zones li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-bottom: 1px solid #ddd; }
-    ul.zones li .status { font-weight: 600; }
-    ul.zones li .status.error { color: #b00020; }
-    ul.zones li .id { color: #666; }
-    .zone-form { display: flex; align-items: flex-end; gap: 0.75rem; margin-top: 1rem; }
-    .zone-form label { flex: 1; margin-bottom: 0; }
-</style>
-</head>
-<body x-data="app()" x-init="init()">
-    <h1>Talos</h1>
-
-    <template x-if="!token">
-        <div>
-            <template x-if="view === 'login'">
-                <form @submit.prevent="login()">
-                    <h2>Log in</h2>
-                    <label>
-                        Username
-                        <input type="text" x-model="loginForm.username" required autocomplete="username">
-                    </label>
-                    <label>
-                        Password
-                        <input type="password" x-model="loginForm.password" required autocomplete="current-password">
-                    </label>
-                    <button type="submit">Log in</button>
-                    <p class="error" x-show="loginError" x-text="loginError"></p>
-                </form>
-            </template>
-
-            <template x-if="view === 'register'">
-                <form @submit.prevent="register()">
-                    <h2>Register</h2>
-                    <label>
-                        Username
-                        <input type="text" x-model="registerForm.username" required autocomplete="username">
-                    </label>
-                    <label>
-                        Password
-                        <input type="password" x-model="registerForm.password" required autocomplete="new-password">
-                    </label>
-                    <button type="submit">Register</button>
-                    <p x-show="registerMessage" x-text="registerMessage"></p>
-                    <p class="error" x-show="registerError" x-text="registerError"></p>
-                </form>
-            </template>
-
-            <p>
-                <a href="#"
-                   @click.prevent="view = view === 'login' ? 'register' : 'login'"
-                   x-text="view === 'login' ? 'Need an account? Register' : 'Have an account? Log in'"></a>
-            </p>
-        </div>
-    </template>
-
-    <template x-if="token">
-        <div>
-            <p>Logged in — a token is present.</p>
-            <p>Server status: <span x-text="health"></span>
-                <button @click="checkHealth()">Check health</button>
-            </p>
-            <button @click="logout()">Log out</button>
-
-            <h2>Alarm</h2>
-            <p>State: <span x-text="state === null ? 'connecting...' : state"></span></p>
-            <button @click="arm()" :disabled="state !== 'Disarmed'">Arm</button>
-            <button @click="disarm()">Disarm</button>
-            <p class="error" x-show="stateError" x-text="stateError"></p>
-
-            <h2>Zones</h2>
-            <button @click="refreshZones()">Refresh</button>
-            <p class="error" x-show="zonesError" x-text="zonesError"></p>
-
-            <ul class="zones">
-                <template x-for="zone in zones" :key="zone.id">
-                    <li>
-                        <span class="id" x-text="`#${zone.id}`"></span>
-                        <span x-text="zone.kind"></span>
-                        <span class="status" :class="{ error: zone.status === 'Triggered' }" x-text="zone.status"></span>
-                        <button @click="deleteZone(zone.id)">Delete</button>
-                    </li>
-                </template>
-            </ul>
-            <p x-show="zones.length === 0">No zones yet.</p>
-
-            <form class="zone-form" @submit.prevent="createZone()">
-                <label>
-                    ID
-                    <input type="number" x-model="newZone.id" required min="0" step="1">
+      <template x-if="!token">
+        <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-100 dark:border-slate-700 p-6 sm:p-8 space-y-6">
+          <template x-if="view === 'login'">
+            <form @submit.prevent="login()" class="space-y-4">
+              <h2 class="text-2xl font-bold text-slate-900 dark:text-white">Log in</h2>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Username
+                  <input type="text" x-model="loginForm.username" required autocomplete="username"
+                    class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:border-indigo-500 dark:text-white" />
                 </label>
-                <label>
-                    Kind
-                    <select x-model="newZone.kind">
-                        <option value="Delay">Delay</option>
-                        <option value="Instant">Instant</option>
-                    </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Password
+                  <input type="password" x-model="loginForm.password" required autocomplete="current-password"
+                    class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:border-indigo-500 dark:text-white" />
                 </label>
-                <button type="submit">Add zone</button>
+              </div>
+              <button type="submit"
+                class="w-full inline-flex cursor-pointer items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 disabled:pointer-events-none disabled:opacity-50">
+                Log in
+              </button>
+              <p class="text-sm text-red-600 dark:text-red-400 font-medium" x-show="loginError" x-text="loginError"></p>
             </form>
+          </template>
+
+          <template x-if="view === 'register'">
+            <form @submit.prevent="register()" class="space-y-4">
+              <h2 class="text-2xl font-bold text-slate-900 dark:text-white">Register</h2>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Username
+                  <input type="text" x-model="registerForm.username" required autocomplete="username"
+                    class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:border-indigo-500 dark:text-white" />
+                </label>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Password
+                  <input type="password" x-model="registerForm.password" required autocomplete="new-password"
+                    class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:border-indigo-500 dark:text-white" />
+                </label>
+              </div>
+              <button type="submit"
+                class="w-full inline-flex cursor-pointer items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 disabled:pointer-events-none disabled:opacity-50">
+                Register
+              </button>
+              <p class="text-sm text-indigo-600 dark:text-indigo-400 font-medium" x-show="registerMessage" x-text="registerMessage"></p>
+              <p class="text-sm text-red-600 dark:text-red-400 font-medium" x-show="registerError" x-text="registerError"></p>
+            </form>
+          </template>
+
+          <p class="text-center mt-4">
+            <a href="#"
+              @click.prevent="view = view === 'login' ? 'register' : 'login'"
+              class="text-sm font-semibold text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300 transition"
+              x-text="view === 'login' ? 'Need an account? Register' : 'Have an account? Log in'"></a>
+          </p>
         </div>
-    </template>
-</body>
+      </template>
+
+      <template x-if="token">
+        <div class="space-y-6">
+          <!-- Info Header -->
+          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-100 dark:border-slate-700 p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Authenticated</span>
+              </div>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Logged in — a token is present.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button @click="logout()"
+                class="inline-flex cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
+                Log out
+              </button>
+            </div>
+          </div>
+
+          <!-- Server Status Card -->
+          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-100 dark:border-slate-700 p-5 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium text-slate-500 dark:text-slate-400">Server status</span>
+              <span class="text-sm font-bold capitalize px-2 py-0.5 rounded-md"
+                :class="{
+                  'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300': health === 'reachable',
+                  'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300': health.includes('checking'),
+                  'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300': health.includes('unreachable') || health === 'unknown'
+                }"
+                x-text="health"></span>
+            </div>
+            <button @click="checkHealth()"
+              class="w-full inline-flex cursor-pointer items-center justify-center rounded-md bg-slate-800 px-3 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600">
+              Check health
+            </button>
+          </div>
+
+          <!-- Alarm Control Panel -->
+          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+            <h2 class="text-xl font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-700 pb-2">Alarm</h2>
+            <div class="flex items-center justify-between bg-slate-50 dark:bg-slate-900 p-4 rounded-xl">
+              <div>
+                <span class="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">State</span>
+                <div class="text-lg font-bold text-slate-900 dark:text-white mt-0.5"
+                  x-text="state === null ? 'connecting...' : state"></div>
+              </div>
+              <div class="flex gap-2">
+                <button @click="arm()" :disabled="state !== 'Disarmed'"
+                  class="inline-flex cursor-pointer items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 disabled:pointer-events-none disabled:opacity-50">
+                  Arm
+                </button>
+                <button @click="disarm()"
+                  class="inline-flex cursor-pointer items-center justify-center rounded-md bg-rose-600 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-rose-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600 active:scale-95">
+                  Disarm
+                </button>
+              </div>
+            </div>
+            <p class="text-sm text-red-600 dark:text-red-400 font-medium" x-show="stateError" x-text="stateError"></p>
+          </div>
+
+          <!-- Zones Management Panel -->
+          <div class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 pb-2">
+              <h2 class="text-xl font-bold text-slate-900 dark:text-white">Zones</h2>
+              <button @click="refreshZones()"
+                class="inline-flex cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
+                Refresh
+              </button>
+            </div>
+            <p class="text-sm text-red-600 dark:text-red-400 font-medium" x-show="zonesError" x-text="zonesError"></p>
+
+            <ul class="divide-y divide-slate-100 dark:divide-slate-700">
+              <template x-for="zone in zones" :key="zone.id">
+                <li class="py-3 flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <span class="text-xs font-mono bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 px-2 py-0.5 rounded" x-text="`#${zone.id}`"></span>
+                    <span class="text-sm font-semibold text-slate-850 dark:text-slate-200" x-text="zone.kind"></span>
+                  </div>
+                  <div class="flex items-center gap-4">
+                    <span class="text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-wider"
+                      :class="zone.status === 'Triggered' ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300' : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'"
+                      x-text="zone.status"></span>
+                    <button @click="deleteZone(zone.id)"
+                      class="inline-flex cursor-pointer items-center justify-center rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-medium text-rose-700 transition hover:bg-rose-100 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900">
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              </template>
+            </ul>
+            <p class="text-slate-450 dark:text-slate-500 text-sm text-center py-4" x-show="zones.length === 0">No zones yet.</p>
+
+            <!-- Add Zone Form -->
+            <form @submit.prevent="createZone()" class="pt-4 border-t border-slate-100 dark:border-slate-700 flex flex-wrap sm:flex-nowrap gap-3 items-end">
+              <div class="w-full sm:w-1/3">
+                <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                  ID
+                  <input type="number" x-model="newZone.id" required min="0" step="1"
+                    class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:border-indigo-500 dark:text-white" />
+                </label>
+              </div>
+              <div class="w-full sm:w-1/3">
+                <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                  Kind
+                  <select x-model="newZone.kind"
+                    class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-indigo-500 dark:text-white">
+                    <option value="Delay">Delay</option>
+                    <option value="Instant">Instant</option>
+                  </select>
+                </label>
+              </div>
+              <button type="submit"
+                class="w-full sm:w-1/3 inline-flex cursor-pointer items-center justify-center rounded-md bg-slate-800 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-slate-900 dark:bg-slate-750 dark:hover:bg-slate-600">
+                Add zone
+              </button>
+            </form>
+          </div>
+        </div>
+      </template>
+    </div>
+  </body>
 </html>

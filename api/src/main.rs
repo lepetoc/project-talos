@@ -145,6 +145,31 @@ async fn main() {
         });
     }
 
+    // Diagnostic-phase listener: re-reads the gateway address on every
+    // iteration, so a dropped connection or a reconfigured address are both
+    // handled by simply looping back around.
+    #[cfg(feature = "shelly")]
+    {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            loop {
+                match db::get_shelly_gateway_addr(&pool).await {
+                    Ok(Some(addr)) => {
+                        if let Err(err) = modules::shelly::run_diagnostic_listener(&addr).await {
+                            tracing::warn!("shelly diagnostic listener failed: {err}");
+                        }
+                    }
+                    // No gateway configured yet: an ordinary state, not worth logging.
+                    Ok(None) => {}
+                    Err(err) => {
+                        tracing::warn!("failed to read shelly gateway address: {err}");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+    }
+
     let listener = tokio::net::TcpListener::bind(bind_addr_from_env())
         .await
         .unwrap();

@@ -1227,8 +1227,10 @@ name = "modules"
 version = "0.1.0"
 dependencies = [
  "core",
+ "futures-util",
  "sia-rs",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 

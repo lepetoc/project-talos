@@ -178,11 +178,7 @@ async fn list_zones(State(state): State<AppState>, _auth: AuthUser) -> Json<Vec<
             .map(|(id, kind, status)| ZoneResponse {
                 id,
                 kind: db::zone_kind_to_str(kind).to_string(),
-                status: match status {
-                    talos_core::ZoneStatus::Clear => "Clear",
-                    talos_core::ZoneStatus::Triggered => "Triggered",
-                }
-                .to_string(),
+                status: db::zone_status_to_str(status).to_string(),
             })
             .collect(),
     )
@@ -551,6 +547,23 @@ mod tests {
             zones,
             json!([{ "id": 1, "kind": "Delay", "status": "Clear" }])
         );
+    }
+
+    #[tokio::test]
+    async fn create_zone_with_invalid_kind_bad_request() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let response = router
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "NotAKind" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

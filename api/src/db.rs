@@ -74,6 +74,13 @@ pub(crate) fn zone_kind_to_str(kind: talos_core::ZoneKind) -> &'static str {
     }
 }
 
+pub(crate) fn zone_status_to_str(status: talos_core::ZoneStatus) -> &'static str {
+    match status {
+        talos_core::ZoneStatus::Clear => "Clear",
+        talos_core::ZoneStatus::Triggered => "Triggered",
+    }
+}
+
 pub(crate) fn parse_zone_kind(raw: &str) -> sqlx::Result<talos_core::ZoneKind> {
     match raw {
         "Delay" => Ok(talos_core::ZoneKind::Delay),

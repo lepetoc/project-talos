@@ -85,12 +85,22 @@ async fn main() {
 
     #[cfg_attr(not(any(feature = "sia_dc09", feature = "shelly")), allow(unused_mut))]
     let mut actioneurs: Vec<Box<dyn modules::Actionneur + Send>> = Vec::new();
+    // Each module's status is one of three states: "disabled" (feature not
+    // compiled in), "not configured" (compiled but missing its config), or
+    // "active" (actually running).
+    #[cfg(feature = "sia_dc09")]
+    let sia_dc09_status;
+    #[cfg(not(feature = "sia_dc09"))]
+    let sia_dc09_status = "disabled";
     #[cfg(feature = "sia_dc09")]
     {
         match db::get_sia_config(&pool).await {
             Ok(Some((account, prefix, receiver_addr))) => {
                 match modules::sia_dc09::SiaDc09Module::new(&account, &prefix, &receiver_addr) {
-                    Ok(module) => actioneurs.push(Box::new(module)),
+                    Ok(module) => {
+                        actioneurs.push(Box::new(module));
+                        sia_dc09_status = "active";
+                    }
                     Err(err) => {
                         error!("failed to initialize sia_dc09 module: {err}");
                         std::process::exit(1);
@@ -99,6 +109,7 @@ async fn main() {
             }
             Ok(None) => {
                 info!("SIA DC-09 is not yet configured; skipping module initialization");
+                sia_dc09_status = "not configured";
             }
             Err(err) => {
                 error!("failed to load sia_dc09 config: {err}");
@@ -107,10 +118,34 @@ async fn main() {
         }
     }
     #[cfg(feature = "shelly")]
+    let shelly_status = "active";
+    #[cfg(not(feature = "shelly"))]
+    let shelly_status = "disabled";
+    #[cfg(feature = "shelly")]
     {
         actioneurs.push(Box::new(modules::shelly::ShellyModule));
     }
     let actioneurs = Arc::new(Mutex::new(actioneurs));
+
+    // The shelly diagnostic listener runs whenever the feature is compiled
+    // in, but only attempts a connection once a gateway address is set.
+    #[cfg(feature = "shelly")]
+    let shelly_gateway = match db::get_shelly_gateway_addr(&pool).await {
+        Ok(Some(_)) => "configured",
+        Ok(None) => "not configured",
+        Err(err) => {
+            tracing::warn!("failed to read shelly gateway address: {err}");
+            "unknown"
+        }
+    };
+    #[cfg(not(feature = "shelly"))]
+    let shelly_gateway = "disabled";
+    info!(
+        sia_dc09 = sia_dc09_status,
+        shelly = shelly_status,
+        shelly_gateway = shelly_gateway,
+        "modules initialized"
+    );
 
     #[cfg(feature = "shelly")]
     {

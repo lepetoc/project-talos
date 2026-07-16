@@ -1,16 +1,26 @@
+use base64::Engine;
+use btsensor::bthome::v2::{BtHomeV2, Element};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, info, warn};
 
-use crate::Actionneur;
+use crate::{Actionneur, AlarmHandle, Reading};
 
 pub struct ShellyModule;
 
-/// Connects to the Shelly gateway's RPC websocket and logs every incoming
-/// frame verbatim, for observing the real device's notification format
-/// before any parsing is written. The initial `Shelly.GetDeviceInfo` call is
-/// a best guess at what makes the gateway start pushing notifications; it
-/// will be adjusted once tested against the real hardware.
-pub async fn run_diagnostic_listener(gateway_addr: &str) -> Result<(), String> {
+/// The BTHome v2 service UUID's 16-bit alias (0xFCD2), in the little-endian
+/// order it appears on the wire in a Service Data AD structure. Bytes 2..4 of
+/// the 128-bit constant hold the alias, big-endian.
+const BTHOME_UUID_LE: [u8; 2] = [
+    btsensor::bthome::v2::UUID.as_bytes()[3],
+    btsensor::bthome::v2::UUID.as_bytes()[2],
+];
+
+/// Connects to the Shelly gateway's RPC websocket and reports BTHome sensor
+/// readings from `ble.scan_result` notifications to the alarm. The initial
+/// `Shelly.GetDeviceInfo` call makes the gateway start pushing notifications
+/// to this client.
+pub async fn run_listener(gateway_addr: &str, alarm: &AlarmHandle) -> Result<(), String> {
     let url = format!("ws://{gateway_addr}/rpc");
     let (mut ws, _response) = tokio_tungstenite::connect_async(&url)
         .await
@@ -24,14 +34,115 @@ pub async fn run_diagnostic_listener(gateway_addr: &str) -> Result<(), String> {
 
     while let Some(message) = ws.next().await {
         match message {
-            Ok(message) => {
-                tracing::info!(target: "shelly_diagnostic", raw = %message, "received frame");
-            }
+            Ok(Message::Text(text)) => handle_frame(&text, alarm),
+            Ok(_) => {}
             Err(err) => return Err(format!("connection to {url} failed: {err}")),
         }
     }
 
     Ok(())
+}
+
+fn handle_frame(text: &str, alarm: &AlarmHandle) {
+    let Ok(frame) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    if frame["method"] != "ble.scan_result" {
+        return;
+    }
+    let Some(events) = frame["params"]["events"].as_array() else {
+        return;
+    };
+    for event in events {
+        // `data` holds either a single scan entry (`[mac, rssi, payload,
+        // name]`) or an array of them, depending on how many results the
+        // gateway batched into the event.
+        let Some(data) = event["data"].as_array() else {
+            continue;
+        };
+        if data.first().is_some_and(serde_json::Value::is_array) {
+            for entry in data {
+                process_scan_entry(entry, alarm);
+            }
+        } else {
+            process_scan_entry(&event["data"], alarm);
+        }
+    }
+}
+
+fn process_scan_entry(entry: &serde_json::Value, alarm: &AlarmHandle) {
+    let (Some(mac), Some(payload)) = (entry[0].as_str(), entry[2].as_str()) else {
+        warn!(%entry, "malformed ble.scan_result entry");
+        return;
+    };
+    // The scan stream includes every nearby Bluetooth device, so this stays
+    // below default log visibility.
+    debug!(mac, rssi = %entry[1], name = %entry[3], "ble scan result");
+
+    let Some(sensor_id) = alarm.canonical_sensor_id(mac) else {
+        return;
+    };
+
+    match decode_reading(payload) {
+        Ok(reading) => match alarm.report(sensor_id, reading) {
+            Ok(()) => info!(sensor = sensor_id, ?reading, "sensor reading reported"),
+            Err(err) => warn!(sensor = sensor_id, "failed to report sensor reading: {err}"),
+        },
+        Err(err) => warn!(
+            sensor = sensor_id,
+            payload, "failed to decode sensor payload: {err}"
+        ),
+    }
+}
+
+/// Decodes a base64 BLE advertisement payload into an alarm reading: finds
+/// the BTHome v2 service data among the payload's AD structures, decodes it,
+/// and maps its opening (0x11) or motion (0x21) binary sensor — whichever the
+/// sensor reports — to a reading.
+fn decode_reading(payload_b64: &str) -> Result<Reading, String> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(payload_b64)
+        .map_err(|err| format!("invalid base64: {err}"))?;
+    let service_data = bthome_service_data(&raw).ok_or("no BTHome v2 service data in payload")?;
+    let decoded =
+        BtHomeV2::decode(service_data).map_err(|err| format!("BTHome decode failed: {err}"))?;
+    let triggered = decoded
+        .elements
+        .iter()
+        .find_map(|element| match element {
+            Element::Open(open) => Some(*open),
+            Element::MotionDetected(motion) => Some(*motion),
+            _ => None,
+        })
+        .ok_or_else(|| format!("no opening or motion element in: {decoded}"))?;
+    Ok(if triggered {
+        Reading::Triggered
+    } else {
+        Reading::Normal
+    })
+}
+
+/// Finds the BTHome v2 service data in a raw BLE advertisement payload. The
+/// payload is a sequence of AD structures — one length byte, one type byte,
+/// then `length - 1` data bytes — and the BTHome payload is the data of the
+/// Service Data - 16-bit UUID structure (type 0x16) whose leading UUID is
+/// BTHome's.
+fn bthome_service_data(raw: &[u8]) -> Option<&[u8]> {
+    let mut rest = raw;
+    while let [len, tail @ ..] = rest {
+        let len = *len as usize;
+        if len == 0 || tail.len() < len {
+            return None;
+        }
+        let (structure, tail) = tail.split_at(len);
+        if let [0x16, uuid_lo, uuid_hi, payload @ ..] = structure {
+            if [*uuid_lo, *uuid_hi] == BTHOME_UUID_LE {
+                return Some(payload);
+            }
+        }
+        rest = tail;
+    }
+    None
 }
 
 impl Actionneur for ShellyModule {

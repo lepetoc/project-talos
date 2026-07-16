@@ -65,6 +65,16 @@ impl AlarmHandle {
         }
     }
 
+    /// Returns the stored id of the sensor matching `sensor_id` ignoring
+    /// ASCII case: MAC-address-based ids may differ in case between what a
+    /// gateway reports and what is stored.
+    pub fn canonical_sensor_id(&self, sensor_id: &str) -> Option<&str> {
+        self.sensor_to_zone
+            .keys()
+            .find(|known| known.eq_ignore_ascii_case(sensor_id))
+            .map(String::as_str)
+    }
+
     pub fn report(&self, sensor_id: &str, reading: Reading) -> Result<(), ReportError> {
         let zone_id = *self
             .sensor_to_zone

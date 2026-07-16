@@ -127,8 +127,8 @@ async fn main() {
     }
     let actioneurs = Arc::new(Mutex::new(actioneurs));
 
-    // The shelly diagnostic listener runs whenever the feature is compiled
-    // in, but only attempts a connection once a gateway address is set.
+    // The shelly listener runs whenever the feature is compiled in, but only
+    // attempts a connection once a gateway address is set.
     #[cfg(feature = "shelly")]
     let shelly_gateway = match db::get_shelly_gateway_addr(&pool).await {
         Ok(Some(_)) => "configured",
@@ -146,26 +146,6 @@ async fn main() {
         shelly_gateway = shelly_gateway,
         "modules initialized"
     );
-
-    #[cfg(feature = "shelly")]
-    {
-        let sensor_to_zone = match db::load_sensor_mappings(&pool).await {
-            Ok(map) => map,
-            Err(err) => {
-                error!("failed to load sensor mappings: {err}");
-                std::process::exit(1);
-            }
-        };
-        // Constructed at startup so the sensor-to-zone map is loaded once;
-        // not yet wired to an HTTP endpoint that would call `report` — that
-        // arrives with the actual Shelly webhook handler.
-        let _alarm_handle = modules::AlarmHandle::new(
-            Arc::clone(&alarm),
-            tx.clone(),
-            Arc::clone(&actioneurs),
-            sensor_to_zone,
-        );
-    }
 
     let exit_delay = timers::exit_delay_from_env();
     let entry_delay = timers::entry_delay_from_env();
@@ -191,18 +171,33 @@ async fn main() {
         });
     }
 
-    // Diagnostic-phase listener: re-reads the gateway address on every
-    // iteration, so a dropped connection or a reconfigured address are both
-    // handled by simply looping back around.
+    // The listener re-reads the gateway address on every iteration, so a
+    // dropped connection or a reconfigured address are both handled by
+    // simply looping back around. The sensor-to-zone map is loaded once, at
+    // startup.
     #[cfg(feature = "shelly")]
     {
+        let sensor_to_zone = match db::load_sensor_mappings(&pool).await {
+            Ok(map) => map,
+            Err(err) => {
+                error!("failed to load sensor mappings: {err}");
+                std::process::exit(1);
+            }
+        };
+        let alarm_handle = modules::AlarmHandle::new(
+            Arc::clone(&alarm),
+            tx.clone(),
+            Arc::clone(&actioneurs),
+            sensor_to_zone,
+        );
         let pool = pool.clone();
         tokio::spawn(async move {
             loop {
                 match db::get_shelly_gateway_addr(&pool).await {
                     Ok(Some(addr)) => {
-                        if let Err(err) = modules::shelly::run_diagnostic_listener(&addr).await {
-                            tracing::warn!("shelly diagnostic listener failed: {err}");
+                        if let Err(err) = modules::shelly::run_listener(&addr, &alarm_handle).await
+                        {
+                            tracing::warn!("shelly listener failed: {err}");
                         }
                     }
                     // No gateway configured yet: an ordinary state, not worth logging.

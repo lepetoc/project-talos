@@ -54,18 +54,14 @@ fn handle_frame(text: &str, alarm: &AlarmHandle) {
         return;
     };
     for event in events {
-        // `data` holds either a single scan entry (`[mac, rssi, payload,
-        // name]`) or an array of them, depending on how many results the
-        // gateway batched into the event.
-        let Some(data) = event["data"].as_array() else {
-            continue;
+        // `data` is `[count, [[mac, rssi, payload, name], ...]]` — the entry
+        // list sits at index 1 behind a batch count.
+        let Some(entries) = event["data"].get(1).and_then(|v| v.as_array()) else {
+            warn!(data = %event["data"], "unexpected ble.scan_result data shape");
+            return;
         };
-        if data.first().is_some_and(serde_json::Value::is_array) {
-            for entry in data {
-                process_scan_entry(entry, alarm);
-            }
-        } else {
-            process_scan_entry(&event["data"], alarm);
+        for entry in entries {
+            process_scan_entry(entry, alarm);
         }
     }
 }

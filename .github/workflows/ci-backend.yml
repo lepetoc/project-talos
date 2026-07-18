@@ -2,7 +2,14 @@ name: CI Backend
 
 on:
   push:
-    branches: [main]
+    paths:
+      - 'core/**'
+      - 'api/**'
+      - 'modules/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ci-backend.yml'
+  pull_request:
     paths:
       - 'core/**'
       - 'api/**'

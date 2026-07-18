@@ -47,13 +47,13 @@ fn handle_frame(text: &str, alarm: &AlarmHandle) {
     let Ok(frame) = serde_json::from_str::<serde_json::Value>(text) else {
         return;
     };
-    if frame["method"] != "ble.scan_result" {
-        return;
-    }
     let Some(events) = frame["params"]["events"].as_array() else {
         return;
     };
     for event in events {
+        if event["event"] != "ble.scan_result" {
+            continue;
+        }
         // `data` is `[count, [[mac, rssi, payload, name], ...]]` — the entry
         // list sits at index 1 behind a batch count.
         let Some(entries) = event["data"].get(1).and_then(|v| v.as_array()) else {

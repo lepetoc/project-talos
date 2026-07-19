@@ -17,6 +17,7 @@ pub struct AppState {
     pub alarm: Arc<Mutex<talos_core::Alarm>>,
     pub tx: tokio::sync::broadcast::Sender<talos_core::State>,
     pub actioneurs: Arc<Mutex<Vec<Box<dyn modules::Actionneur + Send>>>>,
+    pub alarm_handle: Arc<modules::AlarmHandle>,
 }
 
 /// The frontend lives at the repository root, alongside `core` and `api`, not
@@ -147,6 +148,22 @@ async fn main() {
         "modules initialized"
     );
 
+    // Loaded once, at startup, and kept in sync afterward via
+    // `AlarmHandle::add_sensor_mapping` / `remove_sensor_mapping`.
+    let sensor_to_zone = match db::load_sensor_mappings(&pool).await {
+        Ok(map) => map,
+        Err(err) => {
+            error!("failed to load sensor mappings: {err}");
+            std::process::exit(1);
+        }
+    };
+    let alarm_handle = Arc::new(modules::AlarmHandle::new(
+        Arc::clone(&alarm),
+        tx.clone(),
+        Arc::clone(&actioneurs),
+        sensor_to_zone,
+    ));
+
     let exit_delay = timers::exit_delay_from_env();
     let entry_delay = timers::entry_delay_from_env();
     {
@@ -173,23 +190,10 @@ async fn main() {
 
     // The listener re-reads the gateway address on every iteration, so a
     // dropped connection or a reconfigured address are both handled by
-    // simply looping back around. The sensor-to-zone map is loaded once, at
-    // startup.
+    // simply looping back around.
     #[cfg(feature = "shelly")]
     {
-        let sensor_to_zone = match db::load_sensor_mappings(&pool).await {
-            Ok(map) => map,
-            Err(err) => {
-                error!("failed to load sensor mappings: {err}");
-                std::process::exit(1);
-            }
-        };
-        let alarm_handle = modules::AlarmHandle::new(
-            Arc::clone(&alarm),
-            tx.clone(),
-            Arc::clone(&actioneurs),
-            sensor_to_zone,
-        );
+        let alarm_handle = Arc::clone(&alarm_handle);
         let pool = pool.clone();
         tokio::spawn(async move {
             loop {
@@ -223,6 +227,7 @@ async fn main() {
             alarm,
             tx,
             actioneurs,
+            alarm_handle,
         }),
     )
     .await
@@ -238,12 +243,21 @@ pub(crate) mod test_support {
     pub(crate) async fn state() -> AppState {
         let pool = db::init_pool("sqlite::memory:").await.unwrap();
         let (tx, _rx) = tokio::sync::broadcast::channel(16);
+        let alarm = Arc::new(Mutex::new(talos_core::Alarm::new()));
+        let actioneurs = Arc::new(Mutex::new(Vec::new()));
+        let alarm_handle = Arc::new(modules::AlarmHandle::new(
+            Arc::clone(&alarm),
+            tx.clone(),
+            Arc::clone(&actioneurs),
+            std::collections::HashMap::new(),
+        ));
         AppState {
             pool,
             jwt_secret: "test-secret".to_string(),
-            alarm: Arc::new(Mutex::new(talos_core::Alarm::new())),
+            alarm,
             tx,
-            actioneurs: Arc::new(Mutex::new(Vec::new())),
+            actioneurs,
+            alarm_handle,
         }
     }
 }

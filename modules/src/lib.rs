@@ -47,7 +47,7 @@ pub struct AlarmHandle {
     alarm: Arc<Mutex<talos_core::Alarm>>,
     tx: tokio::sync::broadcast::Sender<talos_core::State>,
     actioneurs: Arc<Mutex<Vec<Box<dyn Actionneur + Send>>>>,
-    sensor_to_zone: HashMap<String, u32>,
+    sensor_to_zone: Mutex<HashMap<String, u32>>,
 }
 
 impl AlarmHandle {
@@ -61,23 +61,53 @@ impl AlarmHandle {
             alarm,
             tx,
             actioneurs,
-            sensor_to_zone,
+            sensor_to_zone: Mutex::new(sensor_to_zone),
         }
     }
 
     /// Returns the stored id of the sensor matching `sensor_id` ignoring
     /// ASCII case: MAC-address-based ids may differ in case between what a
     /// gateway reports and what is stored.
-    pub fn canonical_sensor_id(&self, sensor_id: &str) -> Option<&str> {
+    pub fn canonical_sensor_id(&self, sensor_id: &str) -> Option<String> {
         self.sensor_to_zone
+            .lock()
+            .unwrap()
             .keys()
             .find(|known| known.eq_ignore_ascii_case(sensor_id))
-            .map(String::as_str)
+            .cloned()
+    }
+
+    /// A snapshot of the current sensor-to-zone mappings.
+    pub fn list_sensor_mappings(&self) -> Vec<(String, u32)> {
+        self.sensor_to_zone
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(sensor_id, zone_id)| (sensor_id.clone(), *zone_id))
+            .collect()
+    }
+
+    /// Inserts or replaces an in-memory sensor-to-zone mapping. Does not
+    /// touch the database — persistence is the caller's responsibility, as
+    /// `AlarmHandle` does not own database access elsewhere.
+    pub fn add_sensor_mapping(&self, sensor_id: String, zone_id: u32) {
+        self.sensor_to_zone
+            .lock()
+            .unwrap()
+            .insert(sensor_id, zone_id);
+    }
+
+    /// Removes an in-memory sensor-to-zone mapping, if present. Does not
+    /// touch the database — persistence is the caller's responsibility.
+    pub fn remove_sensor_mapping(&self, sensor_id: &str) {
+        self.sensor_to_zone.lock().unwrap().remove(sensor_id);
     }
 
     pub fn report(&self, sensor_id: &str, reading: Reading) -> Result<(), ReportError> {
         let zone_id = *self
             .sensor_to_zone
+            .lock()
+            .unwrap()
             .get(sensor_id)
             .ok_or_else(|| ReportError::UnknownSensor(sensor_id.to_string()))?;
 
@@ -176,6 +206,55 @@ mod tests {
         assert_eq!(
             calls.lock().unwrap().as_slice(),
             &[talos_core::State::Triggered]
+        );
+    }
+
+    #[test]
+    fn add_sensor_mapping_then_report_takes_effect_without_restart() {
+        let mut alarm = talos_core::Alarm::new();
+        alarm.add_zone(1, talos_core::ZoneKind::Instant).unwrap();
+        alarm.arm().unwrap();
+        alarm.complete_exit_delay().unwrap();
+
+        let (handle, _rx, _calls) = alarm_handle_with(alarm, HashMap::new());
+
+        assert_eq!(
+            handle.report("front-door", Reading::Triggered),
+            Err(ReportError::UnknownSensor("front-door".to_string()))
+        );
+
+        handle.add_sensor_mapping("front-door".to_string(), 1);
+
+        handle.report("front-door", Reading::Triggered).unwrap();
+    }
+
+    #[test]
+    fn remove_sensor_mapping_then_report_errors() {
+        let mut sensor_to_zone = HashMap::new();
+        sensor_to_zone.insert("front-door".to_string(), 1);
+        let (handle, _rx, _calls) = alarm_handle_with(talos_core::Alarm::new(), sensor_to_zone);
+
+        handle.remove_sensor_mapping("front-door");
+
+        assert_eq!(
+            handle.report("front-door", Reading::Triggered),
+            Err(ReportError::UnknownSensor("front-door".to_string()))
+        );
+    }
+
+    #[test]
+    fn list_sensor_mappings_returns_snapshot() {
+        let mut sensor_to_zone = HashMap::new();
+        sensor_to_zone.insert("front-door".to_string(), 1);
+        let (handle, _rx, _calls) = alarm_handle_with(talos_core::Alarm::new(), sensor_to_zone);
+
+        handle.add_sensor_mapping("back-door".to_string(), 2);
+
+        let mut mappings = handle.list_sensor_mappings();
+        mappings.sort();
+        assert_eq!(
+            mappings,
+            vec![("back-door".to_string(), 2), ("front-door".to_string(), 1)]
         );
     }
 }

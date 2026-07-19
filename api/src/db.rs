@@ -220,6 +220,51 @@ pub async fn load_sensor_mappings(
         .collect())
 }
 
+/// The database-backed counterpart to `AlarmHandle::list_sensor_mappings`;
+/// routes read the in-memory map instead since that's the live source of
+/// truth, so this isn't called from production code yet. Exercised directly
+/// by tests.
+#[allow(dead_code)]
+pub async fn list_sensor_mappings(pool: &SqlitePool) -> sqlx::Result<Vec<(String, u32)>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as("SELECT sensor_id, zone_id FROM sensor_mappings")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(sensor_id, zone_id)| (sensor_id, zone_id as u32))
+        .collect())
+}
+
+/// Only called from `routes.rs` under the `shelly` feature so far; exercised
+/// directly by tests otherwise.
+#[cfg_attr(not(feature = "shelly"), allow(dead_code))]
+pub async fn insert_sensor_mapping(
+    pool: &SqlitePool,
+    sensor_id: &str,
+    zone_id: u32,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO sensor_mappings (sensor_id, zone_id) VALUES (?, ?) \
+         ON CONFLICT(sensor_id) DO UPDATE SET zone_id = excluded.zone_id",
+    )
+    .bind(sensor_id)
+    .bind(zone_id as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Only called from `routes.rs` under the `shelly` feature so far; exercised
+/// directly by tests otherwise.
+#[cfg_attr(not(feature = "shelly"), allow(dead_code))]
+pub async fn delete_sensor_mapping(pool: &SqlitePool, sensor_id: &str) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM sensor_mappings WHERE sensor_id = ?")
+        .bind(sensor_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,5 +420,45 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn insert_sensor_mapping_then_list_returns_it() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        insert_sensor_mapping(&pool, "front-door", 1).await.unwrap();
+
+        let mappings = list_sensor_mappings(&pool).await.unwrap();
+        assert!(mappings.contains(&("front-door".to_string(), 1)));
+    }
+
+    #[tokio::test]
+    async fn insert_sensor_mapping_twice_upserts_zone_id() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        insert_sensor_mapping(&pool, "front-door", 1).await.unwrap();
+        insert_sensor_mapping(&pool, "front-door", 2).await.unwrap();
+
+        let mappings = list_sensor_mappings(&pool).await.unwrap();
+        assert!(mappings.contains(&("front-door".to_string(), 2)));
+        assert!(!mappings.contains(&("front-door".to_string(), 1)));
+    }
+
+    #[tokio::test]
+    async fn delete_sensor_mapping_removes_it() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        insert_sensor_mapping(&pool, "front-door", 1).await.unwrap();
+        delete_sensor_mapping(&pool, "front-door").await.unwrap();
+
+        let mappings = list_sensor_mappings(&pool).await.unwrap();
+        assert!(!mappings.iter().any(|(id, _)| id == "front-door"));
+    }
+
+    #[tokio::test]
+    async fn delete_sensor_mapping_absent_id_is_not_an_error() {
+        let pool = init_pool("sqlite::memory:").await.unwrap();
+
+        delete_sensor_mapping(&pool, "nope").await.unwrap();
     }
 }

@@ -80,12 +80,21 @@ fn process_scan_entry(entry: &serde_json::Value, alarm: &AlarmHandle) {
     };
 
     match decode_reading(payload) {
-        Ok(reading) => match alarm.report(sensor_id, reading) {
-            Ok(()) => info!(sensor = sensor_id, ?reading, "sensor reading reported"),
-            Err(err) => warn!(sensor = sensor_id, "failed to report sensor reading: {err}"),
+        Ok(reading) => match alarm.report(&sensor_id, reading) {
+            Ok(()) => info!(
+                sensor = sensor_id.as_str(),
+                ?reading,
+                "sensor reading reported"
+            ),
+            Err(err) => {
+                warn!(
+                    sensor = sensor_id.as_str(),
+                    "failed to report sensor reading: {err}"
+                )
+            }
         },
         Err(err) => warn!(
-            sensor = sensor_id,
+            sensor = sensor_id.as_str(),
             payload, "failed to decode sensor payload: {err}"
         ),
     }

@@ -65,6 +65,20 @@ pub struct ShellyConfigRequest {
     gateway_addr: String,
 }
 
+#[cfg(feature = "shelly")]
+#[derive(Serialize)]
+pub struct SensorMappingResponse {
+    sensor_id: String,
+    zone_id: u32,
+}
+
+#[cfg(feature = "shelly")]
+#[derive(Deserialize)]
+pub struct SensorMappingRequest {
+    sensor_id: String,
+    zone_id: u32,
+}
+
 #[cfg(feature = "sia_dc09")]
 #[derive(Serialize)]
 pub struct SiaConfigResponse {
@@ -127,10 +141,19 @@ pub fn router() -> Router<AppState> {
         .route("/ws", get(ws_handler));
 
     #[cfg(feature = "shelly")]
-    let router = router.route(
-        "/modules/shelly/config",
-        get(get_shelly_config).put(put_shelly_config),
-    );
+    let router = router
+        .route(
+            "/modules/shelly/config",
+            get(get_shelly_config).put(put_shelly_config),
+        )
+        .route(
+            "/modules/shelly/sensors",
+            get(list_sensor_mappings).post(add_sensor_mapping),
+        )
+        .route(
+            "/modules/shelly/sensors/{sensor_id}",
+            delete(remove_sensor_mapping),
+        );
 
     #[cfg(feature = "sia_dc09")]
     let router = router.route(
@@ -393,6 +416,68 @@ async fn put_shelly_config(
             error!(%err, "failed to persist shelly gateway address");
             ApiError::Internal
         })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(feature = "shelly")]
+async fn list_sensor_mappings(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+) -> Json<Vec<SensorMappingResponse>> {
+    Json(
+        state
+            .alarm_handle
+            .list_sensor_mappings()
+            .into_iter()
+            .map(|(sensor_id, zone_id)| SensorMappingResponse { sensor_id, zone_id })
+            .collect(),
+    )
+}
+
+#[cfg(feature = "shelly")]
+async fn add_sensor_mapping(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Json(payload): Json<SensorMappingRequest>,
+) -> Result<StatusCode, ApiError> {
+    let zone_exists = state
+        .alarm
+        .lock()
+        .unwrap()
+        .list_zones()
+        .into_iter()
+        .any(|(zone_id, _, _)| zone_id == payload.zone_id);
+    if !zone_exists {
+        return Err(ApiError::BadRequest("zone does not exist"));
+    }
+
+    db::insert_sensor_mapping(&state.pool, &payload.sensor_id, payload.zone_id)
+        .await
+        .map_err(|err| {
+            error!(%err, "failed to persist sensor mapping");
+            ApiError::Internal
+        })?;
+    state
+        .alarm_handle
+        .add_sensor_mapping(payload.sensor_id, payload.zone_id);
+
+    Ok(StatusCode::CREATED)
+}
+
+#[cfg(feature = "shelly")]
+async fn remove_sensor_mapping(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Path(sensor_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    db::delete_sensor_mapping(&state.pool, &sensor_id)
+        .await
+        .map_err(|err| {
+            error!(%err, "failed to persist sensor mapping removal");
+            ApiError::Internal
+        })?;
+    state.alarm_handle.remove_sensor_mapping(&sensor_id);
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1211,6 +1296,178 @@ mod tests {
 
         let response = router
             .oneshot(get_request("/modules/shelly/config", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "shelly")]
+    #[tokio::test]
+    async fn sensor_mapping_routes_require_token() {
+        let router = app(test_support::state().await);
+
+        let list_unauthorized = router
+            .clone()
+            .oneshot(get_request("/modules/shelly/sensors", None))
+            .await
+            .unwrap();
+        assert_eq!(list_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let add_unauthorized = router
+            .clone()
+            .oneshot(json_request(
+                "/modules/shelly/sensors",
+                json!({ "sensor_id": "front-door", "zone_id": 1 }),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(add_unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let remove_unauthorized = router
+            .oneshot(delete_request("/modules/shelly/sensors/front-door", None))
+            .await
+            .unwrap();
+        assert_eq!(remove_unauthorized.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[cfg(feature = "shelly")]
+    #[tokio::test]
+    async fn add_sensor_mapping_with_unknown_zone_bad_request() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let response = router
+            .oneshot(json_request(
+                "/modules/shelly/sensors",
+                json!({ "sensor_id": "front-door", "zone_id": 1 }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(feature = "shelly")]
+    #[tokio::test]
+    async fn add_sensor_mapping_then_report_affects_correct_zone_without_restart() {
+        let state = test_support::state().await;
+        let router = app(state.clone());
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Instant" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        let add_response = router
+            .clone()
+            .oneshot(json_request(
+                "/modules/shelly/sensors",
+                json!({ "sensor_id": "front-door", "zone_id": 1 }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(add_response.status(), StatusCode::CREATED);
+
+        let list_response = router
+            .clone()
+            .oneshot(get_request("/modules/shelly/sensors", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(list_response).await,
+            json!([{ "sensor_id": "front-door", "zone_id": 1 }])
+        );
+
+        state
+            .alarm_handle
+            .report("front-door", modules::Reading::Triggered)
+            .unwrap();
+
+        let zones_response = router
+            .oneshot(get_request("/zones", Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(zones_response).await,
+            json!([{ "id": 1, "kind": "Instant", "status": "Triggered" }])
+        );
+    }
+
+    #[cfg(feature = "shelly")]
+    #[tokio::test]
+    async fn remove_sensor_mapping_then_report_returns_unknown_sensor() {
+        let state = test_support::state().await;
+        let router = app(state.clone());
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        router
+            .clone()
+            .oneshot(json_request(
+                "/zones",
+                json!({ "id": 1, "kind": "Instant" }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        router
+            .clone()
+            .oneshot(json_request(
+                "/modules/shelly/sensors",
+                json!({ "sensor_id": "front-door", "zone_id": 1 }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+
+        let remove_response = router
+            .oneshot(delete_request(
+                "/modules/shelly/sensors/front-door",
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(remove_response.status(), StatusCode::NO_CONTENT);
+
+        assert_eq!(
+            state
+                .alarm_handle
+                .report("front-door", modules::Reading::Triggered),
+            Err(modules::ReportError::UnknownSensor(
+                "front-door".to_string()
+            ))
+        );
+    }
+
+    #[cfg(feature = "shelly")]
+    #[tokio::test]
+    async fn remove_nonexistent_sensor_mapping_still_no_content() {
+        let router = app(test_support::state().await);
+        let token = register_and_login(&router, "alice", "hunter2").await;
+
+        let response = router
+            .oneshot(delete_request("/modules/shelly/sensors/nope", Some(&token)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[cfg(not(feature = "shelly"))]
+    #[tokio::test]
+    async fn shelly_sensor_routes_absent_without_feature() {
+        let router = app(test_support::state().await);
+
+        let response = router
+            .oneshot(get_request("/modules/shelly/sensors", None))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);

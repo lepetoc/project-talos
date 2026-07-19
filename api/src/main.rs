@@ -1,4 +1,5 @@
 mod auth;
+mod cors;
 mod db;
 mod routes;
 mod timers;
@@ -6,6 +7,7 @@ mod timers;
 use std::sync::{Arc, Mutex};
 
 use axum::{routing::get, Router};
+use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
@@ -26,9 +28,28 @@ pub struct AppState {
 const FRONTEND_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../frontend");
 
 pub fn app(state: AppState) -> Router {
-    Router::new()
+    let cors = match cors::cors_layer_from_env() {
+        Ok(cors) => cors,
+        Err(err) => {
+            // Already validated in `main` before this point is reached in
+            // production; only reachable here for direct callers (tests).
+            error!("{err}");
+            None
+        }
+    };
+    app_with_cors(state, cors)
+}
+
+fn app_with_cors(state: AppState, cors: Option<CorsLayer>) -> Router {
+    let mut router = Router::new()
         .route("/health", get(health))
-        .merge(routes::router())
+        .merge(routes::router());
+
+    if let Some(cors) = cors {
+        router = router.layer(cors);
+    }
+
+    router
         .fallback_service(ServeDir::new(FRONTEND_DIR))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -67,6 +88,11 @@ async fn main() {
             std::process::exit(1);
         }
     };
+
+    if let Err(err) = cors::cors_layer_from_env() {
+        error!("{err}");
+        std::process::exit(1);
+    }
 
     let pool = match db::init_pool(&db::database_url_from_env()).await {
         Ok(pool) => pool,
@@ -266,7 +292,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{header, Request, StatusCode};
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -287,5 +313,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"ok");
+    }
+
+    #[tokio::test]
+    async fn no_origins_configured_omits_cors_header() {
+        let response = app_with_cors(test_support::state().await, None)
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header(header::ORIGIN, "https://talos.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn matching_configured_origin_is_allowed() {
+        let cors = cors::cors_layer_for("https://talos.example.com").unwrap();
+
+        let response = app_with_cors(test_support::state().await, cors)
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header(header::ORIGIN, "https://talos.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "https://talos.example.com"
+        );
     }
 }

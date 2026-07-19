@@ -51,6 +51,13 @@ Requires Rust and the environment variables documented in
 cargo run --package api
 ```
 
+Precompiled binaries published on GitHub Releases are built with
+`--all-features`, so they include every module (`sia_dc09`, `shelly`). That's
+a convenience for trying Talos out, not the recommended way to run it —
+consistent with the project's principle of not compiling in modules a given
+deployment doesn't use, build manually and enable only the features you need,
+e.g. `cargo build --package api --no-default-features --features shelly`.
+
 ## Contributing
 
 This is primarily a personal project built for a specific deployment, not one

@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Talos - Settings</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="shared.js"></script>
+    <script type="module" src="settings.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  </head>
+  <body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-100 min-h-screen py-12 px-4 sm:px-6 lg:px-8 flex flex-col items-center" x-data="settings()" x-init="init()">
+    <div class="w-full max-w-xl space-y-8">
+      <!-- Header -->
+      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-100 dark:border-slate-700 p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-extrabold tracking-tight text-indigo-600 dark:text-indigo-400">Settings</h1>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Configure system modules and integrations</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <a href="dashboard.html"
+            class="inline-flex cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
+            Dashboard
+          </a>
+          <button @click="logout()"
+            class="inline-flex cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
+            Log out
+          </button>
+        </div>
+      </div>
+
+      <!-- Section: SIA DC-09 -->
+      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+        <h2 class="text-xl font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-700 pb-2">SIA DC-09</h2>
+        
+        <template x-if="siaAvailable">
+          <form @submit.prevent="submitSiaConfig()" class="space-y-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                Account
+                <input type="text" x-model="siaForm.account"
+                  class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:bg-slate-950 dark:focus:border-indigo-500 dark:text-white" />
+              </label>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                Prefix
+                <input type="text" x-model="siaForm.prefix"
+                  class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:bg-slate-950 dark:focus:border-indigo-500 dark:text-white" />
+              </label>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                Receiver Address
+                <input type="text" x-model="siaForm.receiver_addr"
+                  class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:bg-slate-950 dark:focus:border-indigo-500 dark:text-white" />
+              </label>
+            </div>
+            <button type="submit"
+              class="inline-flex cursor-pointer items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 disabled:pointer-events-none disabled:opacity-50">
+              Save SIA config
+            </button>
+            <p class="text-sm text-emerald-600 dark:text-emerald-400 font-medium" x-show="siaMessage" x-text="siaMessage"></p>
+            <p class="text-sm text-red-600 dark:text-red-400 font-medium" x-show="siaError" x-text="siaError"></p>
+          </form>
+        </template>
+
+        <template x-if="!siaAvailable">
+          <div class="bg-slate-100 dark:bg-slate-800/50 rounded-xl p-5 border border-dashed border-slate-300 dark:border-slate-700 text-center text-slate-500 dark:text-slate-400 text-sm">
+            This module is not available in this build.
+          </div>
+        </template>
+      </div>
+
+      <!-- Section: Shelly — Passerelle -->
+      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+        <h2 class="text-xl font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-700 pb-2">Shelly — Passerelle</h2>
+        
+        <template x-if="shellyAvailable">
+          <div class="space-y-6">
+            <form @submit.prevent="submitShellyConfig()" class="space-y-4">
+              <div>
+                <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                  Gateway Address
+                  <input type="text" x-model="shellyForm.gateway_addr"
+                    class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:bg-slate-950 dark:focus:border-indigo-500 dark:text-white" />
+                </label>
+              </div>
+              <button type="submit"
+                class="inline-flex cursor-pointer items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 disabled:pointer-events-none disabled:opacity-50">
+                Save Gateway config
+              </button>
+              <p class="text-sm text-emerald-600 dark:text-emerald-400 font-medium" x-show="shellyMessage" x-text="shellyMessage"></p>
+              <p class="text-sm text-red-600 dark:text-red-400 font-medium" x-show="shellyError" x-text="shellyError"></p>
+            </form>
+
+            <!-- Section: Shelly — Capteurs (inside Shelly container, below gateway form) -->
+            <div class="pt-6 border-t border-slate-100 dark:border-slate-700 space-y-4">
+              <div class="flex items-center justify-between">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white">Shelly — Capteurs</h3>
+                <button @click="refreshSensors()"
+                  class="inline-flex cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
+                  Refresh
+                </button>
+              </div>
+              <p class="text-sm text-emerald-600 dark:text-emerald-400 font-medium" x-show="sensorsMessage" x-text="sensorsMessage"></p>
+              <p class="text-sm text-red-600 dark:text-red-400 font-medium" x-show="sensorsError" x-text="sensorsError"></p>
+
+              <!-- Table listing sensor mappings -->
+              <div class="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700" x-show="sensors.length > 0">
+                <table class="w-full text-left text-sm text-slate-600 dark:text-slate-300">
+                  <thead class="bg-slate-100 dark:bg-slate-900 text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">
+                    <tr>
+                      <th class="px-4 py-3">Sensor ID</th>
+                      <th class="px-4 py-3">Zone ID</th>
+                      <th class="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100 dark:divide-slate-700/50">
+                    <template x-for="sensor in sensors" :key="sensor.sensor_id">
+                      <tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/50">
+                        <td class="px-4 py-3 font-mono font-medium text-slate-900 dark:text-white" x-text="sensor.sensor_id"></td>
+                        <td class="px-4 py-3 font-mono" x-text="sensor.zone_id"></td>
+                        <td class="px-4 py-3 text-right">
+                          <button @click="deleteSensor(sensor.sensor_id)"
+                            class="inline-flex cursor-pointer items-center justify-center rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 transition hover:bg-rose-100 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900">
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <p class="text-slate-450 dark:text-slate-500 text-sm text-center py-4" x-show="sensors.length === 0">No sensors mapped.</p>
+
+              <!-- Add Sensor Form -->
+              <form @submit.prevent="addSensor()" class="pt-4 border-t border-slate-100 dark:border-slate-700 flex flex-wrap sm:flex-nowrap gap-3 items-end">
+                <div class="w-full sm:w-1/2">
+                  <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                    Sensor ID
+                    <input type="text" x-model="newSensor.sensor_id" required
+                      class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:bg-slate-950 dark:focus:border-indigo-500 dark:text-white" />
+                  </label>
+                </div>
+                <div class="w-full sm:w-1/3">
+                  <label class="block text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">
+                    Zone ID
+                    <input type="number" x-model="newSensor.zone_id" required min="0" step="1"
+                      class="mt-1 block w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 transition hover:border-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder-slate-600 dark:hover:border-slate-600 dark:focus:bg-slate-950 dark:focus:border-indigo-500 dark:text-white" />
+                  </label>
+                </div>
+                <button type="submit"
+                  class="w-full sm:w-auto inline-flex cursor-pointer items-center justify-center rounded-md bg-slate-800 px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-slate-900 dark:bg-slate-750 dark:hover:bg-slate-600">
+                  Add sensor
+                </button>
+              </form>
+            </div>
+          </div>
+        </template>
+
+        <template x-if="!shellyAvailable">
+          <div class="bg-slate-100 dark:bg-slate-800/50 rounded-xl p-5 border border-dashed border-slate-300 dark:border-slate-700 text-center text-slate-500 dark:text-slate-400 text-sm">
+            This module is not available in this build.
+          </div>
+        </template>
+      </div>
+    </div>
+  </body>
+</html>

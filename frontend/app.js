@@ -1,3 +1,5 @@
+import { apiFetch, logout as sharedLogout } from "./shared.js";
+
 function app() {
   return {
     token: localStorage.getItem("talos_token"),
@@ -41,20 +43,8 @@ function app() {
       });
     },
 
-    // Merges the Authorization header onto every authenticated request and
-    // forces a logout when the token has expired or been revoked, so
-    // callers don't each need to special-case a 401.
     async apiFetch(path, options = {}) {
-      const headers = { ...(options.headers || {}) };
-      if (this.token) {
-        headers["Authorization"] = `Bearer ${this.token}`;
-      }
-      const res = await fetch(path, { ...options, headers });
-      if (res.status === 401) {
-        this.logout();
-        throw new Error("unauthorized");
-      }
-      return res;
+      return apiFetch(path, options);
     },
 
     async login() {
@@ -187,7 +177,6 @@ function app() {
     },
 
     logout() {
-      localStorage.removeItem("talos_token");
       this.token = null;
       this.view = "login";
       this.zones = [];
@@ -196,6 +185,9 @@ function app() {
         this.ws.close();
         this.ws = null;
       }
+      sharedLogout();
     },
   };
 }
+
+window.app = app;

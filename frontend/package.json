@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build:css": "tailwindcss -i src/input.css -o style.css",
-    "lint": "eslint app.js shared.js settings.js",
-    "format:check": "prettier --check app.js shared.js settings.js"
+    "lint": "eslint index.js dashboard.js shared.js settings.js",
+    "format:check": "prettier --check index.js dashboard.js shared.js settings.js"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.0.0",

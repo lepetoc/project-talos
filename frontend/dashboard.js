@@ -1,14 +1,12 @@
-import { apiFetch, logout as sharedLogout } from "./shared.js";
+import {
+  apiFetch,
+  getToken,
+  requireAuth,
+  logout as sharedLogout,
+} from "./shared.js";
 
-function app() {
+function dashboard() {
   return {
-    token: localStorage.getItem("talos_token"),
-    view: "login",
-    loginForm: { username: "", password: "" },
-    registerForm: { username: "", password: "" },
-    loginError: "",
-    registerError: "",
-    registerMessage: "",
     health: "unknown",
     zones: [],
     zonesError: "",
@@ -18,11 +16,12 @@ function app() {
     ws: null,
 
     init() {
-      if (this.token) {
-        this.checkHealth();
-        this.refreshZones();
-        this.connectWs();
+      if (!requireAuth()) {
+        return;
       }
+      this.checkHealth();
+      this.refreshZones();
+      this.connectWs();
     },
 
     connectWs() {
@@ -30,66 +29,17 @@ function app() {
       const socket = new WebSocket(`${protocol}//${location.host}/ws`);
       this.ws = socket;
       socket.addEventListener("open", () => {
-        socket.send(this.token);
+        socket.send(getToken());
       });
       socket.addEventListener("message", (event) => {
         const data = JSON.parse(event.data);
         this.state = data.state;
       });
       socket.addEventListener("close", () => {
-        if (this.token) {
+        if (getToken()) {
           setTimeout(() => this.connectWs(), 2000);
         }
       });
-    },
-
-    async apiFetch(path, options = {}) {
-      return apiFetch(path, options);
-    },
-
-    async login() {
-      this.loginError = "";
-      try {
-        const res = await fetch("/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(this.loginForm),
-        });
-        if (!res.ok) {
-          this.loginError = `Login failed (HTTP ${res.status})`;
-          return;
-        }
-        const data = await res.json();
-        localStorage.setItem("talos_token", data.token);
-        this.token = data.token;
-        this.loginForm = { username: "", password: "" };
-        this.checkHealth();
-        this.refreshZones();
-        this.connectWs();
-      } catch (err) {
-        this.loginError = `Login failed: ${err}`;
-      }
-    },
-
-    async register() {
-      this.registerError = "";
-      this.registerMessage = "";
-      try {
-        const res = await this.apiFetch("/auth/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(this.registerForm),
-        });
-        if (!res.ok) {
-          this.registerError = `Registration failed (HTTP ${res.status})`;
-          return;
-        }
-        this.registerMessage = "Registered. You can now log in.";
-        this.registerForm = { username: "", password: "" };
-        this.view = "login";
-      } catch (err) {
-        this.registerError = `Registration failed: ${err}`;
-      }
     },
 
     async checkHealth() {
@@ -105,7 +55,7 @@ function app() {
     async refreshZones() {
       this.zonesError = "";
       try {
-        const res = await this.apiFetch("/zones");
+        const res = await apiFetch("/zones");
         if (!res.ok) {
           this.zonesError = `Failed to load zones (HTTP ${res.status})`;
           return;
@@ -119,7 +69,7 @@ function app() {
     async createZone() {
       this.zonesError = "";
       try {
-        const res = await this.apiFetch("/zones", {
+        const res = await apiFetch("/zones", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -141,7 +91,7 @@ function app() {
     async deleteZone(id) {
       this.zonesError = "";
       try {
-        const res = await this.apiFetch(`/zones/${id}`, { method: "DELETE" });
+        const res = await apiFetch(`/zones/${id}`, { method: "DELETE" });
         if (!res.ok) {
           this.zonesError = `Failed to delete zone ${id} (HTTP ${res.status})`;
           return;
@@ -155,7 +105,7 @@ function app() {
     async arm() {
       this.stateError = "";
       try {
-        const res = await this.apiFetch("/arm", { method: "POST" });
+        const res = await apiFetch("/arm", { method: "POST" });
         if (!res.ok) {
           this.stateError = `Failed to arm (HTTP ${res.status})`;
         }
@@ -167,7 +117,7 @@ function app() {
     async disarm() {
       this.stateError = "";
       try {
-        const res = await this.apiFetch("/disarm", { method: "POST" });
+        const res = await apiFetch("/disarm", { method: "POST" });
         if (!res.ok) {
           this.stateError = `Failed to disarm (HTTP ${res.status})`;
         }
@@ -177,10 +127,6 @@ function app() {
     },
 
     logout() {
-      this.token = null;
-      this.view = "login";
-      this.zones = [];
-      this.state = null;
       if (this.ws) {
         this.ws.close();
         this.ws = null;
@@ -190,4 +136,4 @@ function app() {
   };
 }
 
-window.app = app;
+window.dashboard = dashboard;

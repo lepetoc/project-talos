@@ -7,18 +7,25 @@ A self-hosted alarm system — state machine, REST/WebSocket API, and a minimal
 web interface — built as a personal project, currently running a real
 deployment for a coworking space.
 
-## Status: functional core and API, integrations not yet built
+## Status: core, API, and SIA DC-09 functional and tested; Shelly a work in progress
 
 The alarm logic itself (arming, disarming, entry/exit delays, zone tracking)
 and the API around it (authentication, zone management, real-time state over
-WebSocket) are implemented and tested. What is **not** yet in place:
+WebSocket) are implemented and tested. So is reporting to a monitoring center
+over [SIA DC-09](https://github.com/lepetoc/sia-rs), including tests against a
+simulated receiver that verifies the real wire protocol and acknowledgment
+handling. The Shelly integration is still a work in progress:
 
-- **No physical sensor integration.** Nothing currently connects this system
-  to real hardware (the project uses Shelly devices) — zones today can only
-  be triggered by direct API calls, not by an actual door or motion sensor.
-- **No connection to a monitoring center.** Reporting events to a real
-  central station over [SIA DC-09](https://github.com/lepetoc/sia-rs) is
-  planned but not yet wired in.
+- **Shelly BLE/BTHome sensor decoding is a work in progress.** The decoding
+  logic is implemented and unit-tested, but not yet fully confirmed
+  end-to-end against real hardware — bugs are possible, and this is being
+  actively worked on.
+- **SIA DC-09 reporting is implemented and tested, not just planned.**
+  This includes real network I/O against a simulated receiver that verifies
+  the message format and acknowledgment handling.
+
+What is otherwise **not** yet in place:
+
 - **No role-based access control.** Every authenticated account has identical
   permissions; there is no distinction between an administrator and anyone
   else.
@@ -40,12 +47,17 @@ not a finished product.
   authentication, and the background task that drives `core`'s delays.
 - `frontend/` — a single-page interface (Alpine.js via CDN, no build step),
   served directly by `api`.
+- `modules/` — hardware and monitoring-center integrations (SIA DC-09,
+  Shelly), each behind its own Cargo feature so a deployment only compiles
+  what it needs.
 
 ## Running it
 
 Requires Rust and the environment variables documented in
 [`.env.example`](.env.example) — copy it to `.env` and fill in a real value for
-`TALOS_JWT_SECRET` at minimum.
+`TALOS_JWT_SECRET` at minimum. If you're serving the frontend from a different
+origin than the API, also set `TALOS_ALLOWED_ORIGINS`; it's optional, but
+cross-origin requests are blocked by default otherwise.
 
 ```sh
 cargo run --package api
@@ -57,6 +69,10 @@ a convenience for trying Talos out, not the recommended way to run it —
 consistent with the project's principle of not compiling in modules a given
 deployment doesn't use, build manually and enable only the features you need,
 e.g. `cargo build --package api --no-default-features --features shelly`.
+
+After starting the server, the SIA DC-09 and Shelly integrations still need
+to be configured through the settings page (`settings.html`) — until
+configured, they report as "not configured" and take no action.
 
 ## Contributing
 

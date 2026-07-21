@@ -12,12 +12,12 @@
   <body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-100 min-h-screen py-12 px-4 sm:px-6 lg:px-8 flex flex-col items-center" x-data="settings()" x-init="init()">
     <div class="w-full max-w-xl space-y-8">
       <!-- Header -->
-      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-100 dark:border-slate-700 p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <header class="bg-white dark:bg-slate-800 rounded-xl shadow-md border border-slate-100 dark:border-slate-700 p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 class="text-2xl font-extrabold tracking-tight text-indigo-600 dark:text-indigo-400">Settings</h1>
           <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Configure system modules and integrations</p>
         </div>
-        <div class="flex items-center gap-2">
+        <nav class="flex items-center gap-2">
           <a href="dashboard.html"
             class="inline-flex cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
             Dashboard
@@ -26,11 +26,12 @@
             class="inline-flex cursor-pointer items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 active:scale-95 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800">
             Log out
           </button>
-        </div>
-      </div>
+        </nav>
+      </header>
 
+      <main class="space-y-8">
       <!-- Section: SIA DC-09 -->
-      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+      <section class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
         <h2 class="text-xl font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-700 pb-2">SIA DC-09</h2>
         
         <div x-show="siaAvailable">
@@ -70,10 +71,10 @@
             This module is not available in this build.
           </div>
         </template>
-      </div>
+      </section>
 
       <!-- Section: Shelly — Passerelle -->
-      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+      <section class="bg-white dark:bg-slate-800 rounded-xl shadow-lg border border-slate-100 dark:border-slate-700 p-6 space-y-4">
         <h2 class="text-xl font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-700 pb-2">Shelly — Passerelle</h2>
         
         <div x-show="shellyAvailable">
@@ -95,7 +96,7 @@
             </form>
 
             <!-- Section: Shelly — Capteurs (inside Shelly container, below gateway form) -->
-            <div class="pt-6 border-t border-slate-100 dark:border-slate-700 space-y-4">
+            <section class="pt-6 border-t border-slate-100 dark:border-slate-700 space-y-4">
               <div class="flex items-center justify-between">
                 <h3 class="text-lg font-bold text-slate-900 dark:text-white">Shelly — Capteurs</h3>
                 <button @click="refreshSensors()"
@@ -155,7 +156,7 @@
                   Add sensor
                 </button>
               </form>
-            </div>
+            </section>
           </div>
         </div>
 
@@ -164,7 +165,8 @@
             This module is not available in this build.
           </div>
         </template>
-      </div>
+      </section>
+      </main>
     </div>
   </body>
 </html>

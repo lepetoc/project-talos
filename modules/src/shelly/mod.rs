@@ -163,9 +163,94 @@ impl Actionneur for ShellyModule {
 mod tests {
     use super::*;
 
+    fn hex_bytes(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
     #[test]
     fn on_state_change_compiles_and_runs() {
         let mut module = ShellyModule;
         module.on_state_change(talos_core::State::Armed, &[]);
+    }
+
+    // Real payloads captured from the actual SBMO-003Z motion sensor during
+    // hardware testing, manually decoded and verified byte-by-byte:
+    // device info 0x44 (BTHome v2, unencrypted), packet id, battery,
+    // illuminance, then object id 0x21 (motion) with value 0x00 or 0x01.
+
+    #[test]
+    fn decode_reading_real_capture_motion_normal() {
+        // Captured 2026-07-16, motion object (0x21) = 0x00.
+        assert_eq!(
+            decode_reading("AgEGDhbS/EQApAFkBYSZACEA").unwrap(),
+            Reading::Normal
+        );
+    }
+
+    #[test]
+    fn decode_reading_real_capture_motion_triggered() {
+        // Captured 2026-07-16, motion object (0x21) = 0x01.
+        assert_eq!(
+            decode_reading("AgEGDhbS/EQApQFkBYSyACEB").unwrap(),
+            Reading::Triggered
+        );
+    }
+
+    #[test]
+    fn decode_reading_rejects_invalid_base64() {
+        assert!(decode_reading("not valid base64!!!").is_err());
+    }
+
+    #[test]
+    fn decode_reading_rejects_payload_without_bthome_service_data() {
+        // Valid base64, valid AD structure, but no Service Data - 16-bit UUID
+        // structure carrying the BTHome UUID at all — e.g. just flags.
+        // Encode "0201060303AABB" (flags + an unrelated 16-bit service UUID
+        // list) as the payload.
+        let payload = base64::engine::general_purpose::STANDARD.encode(hex_bytes("0201060303aabb"));
+        assert!(decode_reading(&payload).is_err());
+    }
+
+    #[test]
+    fn decode_reading_rejects_bthome_payload_without_opening_or_motion() {
+        // A real BTHome structure containing only packet id, battery, and
+        // illuminance — no opening (0x11) or motion (0x21) object — should
+        // fail with a clear "no opening or motion element" error, not decode
+        // successfully with some default. This is the real captured payload
+        // with its trailing motion object (`2100`) removed and the AD length
+        // byte recomputed accordingly (0x0c, not the original 0x0e).
+        let payload = base64::engine::general_purpose::STANDARD
+            .encode(hex_bytes("0201060c16d2fc4400a4016405849900"));
+        let err = decode_reading(&payload).unwrap_err();
+        assert!(err.contains("no opening or motion"));
+    }
+
+    #[test]
+    fn bthome_service_data_finds_payload_after_uuid() {
+        let raw = hex_bytes("0201060e16d2fc4400a40164058499002100");
+        let data = bthome_service_data(&raw).unwrap();
+        assert_eq!(data, hex_bytes("4400a40164058499002100").as_slice());
+    }
+
+    #[test]
+    fn bthome_service_data_returns_none_without_bthome_uuid() {
+        let raw = hex_bytes("0201060303aabb");
+        assert!(bthome_service_data(&raw).is_none());
+    }
+
+    #[test]
+    fn bthome_service_data_returns_none_on_truncated_structure() {
+        // A length byte claiming more data than actually follows must not
+        // panic — just report no match.
+        let raw = hex_bytes("ff16d2fc44");
+        assert!(bthome_service_data(&raw).is_none());
+    }
+
+    #[test]
+    fn bthome_service_data_returns_none_on_empty_input() {
+        assert!(bthome_service_data(&[]).is_none());
     }
 }

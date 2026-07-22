@@ -124,12 +124,59 @@ jobs:
     name: Release
     needs: [fmt, clippy, test, doc, audit]
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            ext: ""
+          - os: windows-latest
+            platform: windows
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --all-features
+      - run: cargo build --release --all-features --package api
+      - name: Rename binary
+        shell: bash
+        run: cp "target/release/api${{ matrix.ext }}" "talos-${{ matrix.platform }}-${{ inputs.tag }}${{ matrix.ext }}"
+
+      # The steps below must only run once, not once per matrix leg — tagging
+      # and pushing twice would conflict. Gate them to the linux job only.
+      - name: Create and push the release tag
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ inputs.tag }}"
+          git push origin "${{ inputs.tag }}"
+
+      - name: Generate this release's changelog section
+        if: matrix.platform == 'linux'
+        uses: orhun/git-cliff-action@v4
+        id: git-cliff
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: release_notes.md
+
+      - name: Prepend it to CHANGELOG.md and commit
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          cat release_notes.md CHANGELOG.md > CHANGELOG.md.tmp
+          mv CHANGELOG.md.tmp CHANGELOG.md
+          git add CHANGELOG.md
+          git commit -m "chore: update changelog for ${{ inputs.tag }}"
+          git push origin HEAD:main
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          files: target/release/api
+          body_path: ${{ matrix.platform == 'linux' && 'release_notes.md' || '' }}
+          files: talos-${{ matrix.platform }}-${{ inputs.tag }}${{ matrix.ext }}

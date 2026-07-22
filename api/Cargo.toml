@@ -8,7 +8,7 @@ argon2 = "0.5.3"
 axum = { version = "0.8.9", features = ["ws"] }
 talos_core = { path = "../core", package = "core" }
 modules = { path = "../modules" }
-jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["aws_lc_rs"] }
 password-hash = { version = "0.5", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
